@@ -518,13 +518,6 @@ body.touch #help{display:none}
 
 <div id="help">W A S D — yurish &nbsp;|&nbsp; SHIFT — yugurish &nbsp;|&nbsp; SPACE — sakrash &nbsp;|&nbsp; Sichqoncha (bosib tortish) — kamera &nbsp;|&nbsp; G‘ildirak — masofa</div>
 
-<div id="lifePanel" class="panel" style="position:fixed;left:12px;bottom:64px;z-index:25;width:min(330px,calc(100vw - 24px));max-height:42vh;overflow:auto;color:#fff;font:12px system-ui">
- <b style="color:#32d99a">HAYOT PANELI</b><div id="lifeStats">Hisob yuklanmoqda...</div>
- <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px">
-  <button class="btn" onclick="lifeAction('mine')">⛏ KON</button><button class="btn" onclick="lifeAction('sleep')">🛏 UXLASH</button><button class="btn" onclick="lifeAction('wanted')">🚔 HOLAT</button>
- </div><div id="lifeShop" style="display:grid;grid-template-columns:repeat(2,1fr);gap:5px;margin-top:7px"></div>
- <small style="opacity:.7">Pul kon qazish orqali topiladi. Xaridlar hisobdan yechiladi.</small>
-</div>
 <div id="touch">
  <div id="joyzone"><div id="joybase"><div id="joyknob"></div></div></div>
  <div id="btns">
@@ -863,7 +856,7 @@ document.addEventListener('visibilitychange',function(){mon.t0=0;mon.low=0;mon.h
 let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
 function showHint(t){const h=document.getElementById('interactHint');if(h){h.textContent=t;h.style.display=t?'block':'none';}}
-function nearestBuilding(){let best=null,bd=999;for(const b of W.boxes){const r=lcg(b[6]);for(let k=0;k<12;k++)r();const doorX=b[0]+(r()-0.5)*(b[2]-8);const doorZ=b[1]+b[3]/2+1.8;const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}}return best;}
+function nearestBuilding(){let best=null,bd=999;for(const b of W.boxes){const r=lcg(b[6]);for(let k=0;k<15;k++)r();const doorX=b[0]+(r()-0.5)*(b[2]-8);const doorZ=b[1]+b[3]/2+1.8;const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}}return best;}
 function buildWorld(){
  const lim=W.limit,R=W.roads,RH=W.road_half;
 
@@ -1148,6 +1141,52 @@ function buildWorld(){
   cloudGroup.add(sp);
  }
  scene.add(cloudGroup);
+}
+
+
+// ======================= SHAHAR AHOLISI (NPC) =======================
+let cityNPCs=[];
+function buildCityPopulation(){
+ const rng=lcg(918273), clothes=[0x168b78,0x315c9a,0x8a4b32,0x4d5661,0x9a7b36,0x743f73,0xb5b9bf,0x253c32];
+ const skin=[0xc58f68,0xe0ad83,0x9a674c,0xd6a17b];
+ const hair=[0x171717,0x463126,0x77716a,0x1f2933];
+ const geo={body:new THREE.CapsuleGeometry(0.29,0.72,4,8),head:new THREE.SphereGeometry(0.22,12,10),leg:new THREE.CapsuleGeometry(0.105,0.48,3,7),arm:new THREE.CapsuleGeometry(0.085,0.48,3,7)};
+ cityNPCs=[];
+ for(let i=0;i<64;i++){
+  const g=new THREE.Group();
+  const shirt=new THREE.MeshStandardMaterial({color:clothes[(rng()*clothes.length)|0],roughness:0.88});
+  const skinMat=new THREE.MeshStandardMaterial({color:skin[(rng()*skin.length)|0],roughness:0.9});
+  const hairMat=new THREE.MeshStandardMaterial({color:hair[(rng()*hair.length)|0],roughness:1});
+  const body=new THREE.Mesh(geo.body,shirt);body.position.y=1.08;g.add(body);
+  const head=new THREE.Mesh(geo.head,skinMat);head.position.y=1.78;g.add(head);
+  const hairCap=new THREE.Mesh(new THREE.SphereGeometry(0.225,12,8,0,Math.PI*2,0,Math.PI*0.55),hairMat);hairCap.position.y=1.86;g.add(hairCap);
+  const legs=[];
+  for(const x of [-0.13,0.13]){const leg=new THREE.Mesh(geo.leg,new THREE.MeshStandardMaterial({color:0x252a30,roughness:0.95}));leg.position.set(x,0.42,0);g.add(leg);legs.push(leg);}
+  const arms=[];
+  for(const x of [-0.34,0.34]){const arm=new THREE.Mesh(geo.arm,shirt);arm.position.set(x,1.12,0);arm.rotation.z=x<0?-0.12:0.12;g.add(arm);arms.push(arm);}
+  const homeSide=(rng()*4)|0, lane=homeSide===0?[-150,150]:homeSide===1?[-150,150]:[-150,150];
+  let x,z;
+  if(i%4===0){x=(rng()*2-1)*145;z=(rng()*2-1)*145;}else{
+   const road= W.roads[2+((rng()*5)|0)];
+   if(rng()<0.5){x=(rng()*2-1)*145;z=road+(rng()<0.5?-1:1)*8.2;}
+   else{x=road+(rng()<0.5?-1:1)*8.2;z=(rng()*2-1)*145;}
+  }
+  g.position.set(x,0,z);g.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});scene.add(g);
+  const a=rng()*TAU,speed=0.65+rng()*0.65;
+  cityNPCs.push({group:g,legs,arms,tx:x+Math.cos(a)*8,tz:z+Math.sin(a)*8,speed,phase:rng()*TAU,wait:rng()*4,wealth:rng()<0.08?'boy':(rng()<0.35?'kambag\'al':'oddiy')});
+ }
+}
+function updateCityPopulation(dt,t){
+ for(const n of cityNPCs){
+  const g=n.group;
+  if(n.wait>0){n.wait-=dt;}else{
+   let dx=n.tx-g.position.x,dz=n.tz-g.position.z,d=Math.hypot(dx,dz);
+   if(d<1.5){n.wait=1.2+Math.random()*3;const a=Math.random()*TAU;n.tx=clamp(g.position.x+Math.cos(a)*(5+Math.random()*13),-155,155);n.tz=clamp(g.position.z+Math.sin(a)*(5+Math.random()*13),-155,155);}
+   else{const step=Math.min(d,n.speed*dt);g.position.x+=dx/d*step;g.position.z+=dz/d*step;g.rotation.y=Math.atan2(dx,dz);}
+  }
+  const walking=n.wait<=0, swing=walking?Math.sin(t*0.007*n.speed+n.phase)*0.48:0;
+  n.legs[0].rotation.x=swing;n.legs[1].rotation.x=-swing;n.arms[0].rotation.x=-swing*0.65;n.arms[1].rotation.x=swing*0.65;
+ }
 }
 
 // ======================= TO'QNASHUV =======================
@@ -1555,6 +1594,7 @@ function frame(now){
   const dt=Math.min(Math.max((now-lastT)/1000,0),0.05);lastT=now;
   if(me.avatar)updateMe(dt);
   updateOthers(dt);
+  updateCityPopulation(dt,now);
   updateCamera(dt,now);
   updateEnv(dt);
   if(me.avatar)maybeSend(now);
@@ -1575,10 +1615,9 @@ async function lifeRequest(path,body){
  const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','Authorization':'Bearer '+lifeToken},body:body?JSON.stringify(body):undefined});
  const d=await r.json();if(!r.ok)throw new Error(d.detail||'So‘rov bajarilmadi');return d;
 }
-function drawLife(){if(!lifeData)return;const s=$('lifeStats');s.innerHTML='💵 '+lifeData.cash+' so‘m &nbsp; 🍔 '+lifeData.hunger+'% &nbsp; ⭐ '+lifeData.wanted+'<br>🎒 '+Object.entries(lifeData.inventory||{}).map(([k,v])=>k+': '+v).join(', ');
- const shop=$('lifeShop');shop.innerHTML='';Object.entries(lifeData.shop||{}).forEach(([id,item])=>{const b=document.createElement('button');b.className='btn';b.textContent=item.title+' · '+item.price;b.onclick=()=>lifeAction('buy',id);shop.appendChild(b);});}
+function drawLife(){}
 async function refreshLife(){try{lifeData=await lifeRequest('/api/state');drawLife();}catch(e){$('lifeStats').textContent=e.message;}}
-window.lifeAction=async function(action,item){try{const d=await lifeRequest('/api/action',{action,item});lifeData=d;drawLife();toast(d.message||'Bajarildi');}catch(e){toast(e.message);}};
+window.lifeAction=async function(action,item){return;};
 async function createLifeSession(name){const r=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Hisob ochilmadi');lifeToken=d.token;store('ulrp_token',lifeToken);lifeData=d.state;drawLife();}
 
 async function startPlaying(){
@@ -1604,6 +1643,7 @@ async function boot(){
   initEngine();
   setBoot(60,'Shahar qurilmoqda...');await pause();
   buildWorld();
+  buildCityPopulation();
   applyQuality(curLevel);
   setBoot(100,'Tayyor!');await pause();
   clearTimeout(watchdog);
