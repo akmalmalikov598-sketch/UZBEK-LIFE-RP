@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>UZBEK LIFE RP</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="game-container"></div>
+    
+    <!-- UI Overlay -->
+    <div id="ui">
+        <div id="hud" style="display:none;">
+            <div id="player-name">Ism</div>
+            <div id="fps">FPS: 0</div>
+        </div>
+
+        <div id="auth-screen">
+            <h1>UZBEK LIFE RP</h1>
+            <input type="text" id="username" placeholder="Username">
+            <input type="password" id="password" placeholder="Parol">
+            <button id="btn-login">KIRISH</button>
+            <button id="btn-register">RO'YXATDAN O'TISH</button>
+            <div id="auth-msg"></div>
+        </div>
+
+        <div id="char-screen" style="display:none;">
+            <h2>Personaj Yaratish</h2>
+            <input type="text" id="fname" placeholder="Ism">
+            <input type="text" id="lname" placeholder="Familiya">
+            <button id="btn-create-char">YARATISH</button>
+            <div id="char-msg"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/static/client.js"></script>
+</body>
+</html>
