@@ -10,11 +10,15 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 
+# Passlib xatolarini oldini olish uchun context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 def verify_password(plain, hashed):
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(plain, hashed)
+    except Exception:
+        return False
 
 def get_password_hash(password):
     return pwd_context.hash(password)
