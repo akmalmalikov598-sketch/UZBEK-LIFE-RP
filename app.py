@@ -976,7 +976,7 @@ function buildWorld(){
   if(c[2]==='x')colliders.push([c[0],c[1],2.35,1.05,1.7]);else colliders.push([c[0],c[1],1.05,2.35,1.7]);
  });
  // Uylar, avtomobillar va interyerlar uchun interaktiv tizim
- let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1,interactionText='';
+ let interactionText=''; // activeCar va uy holati yuqoridagi umumiy scope'dan boshqariladi
  const hint=document.createElement('div');hint.id='interactHint';hint.style.cssText='position:fixed;left:50%;bottom:82px;transform:translateX(-50%);z-index:30;padding:11px 17px;border:1px solid #ffffff35;border-radius:12px;background:#101a22e8;color:white;font:700 13px system-ui;display:none;text-align:center;pointer-events:none;white-space:pre-line';document.body.appendChild(hint);
  function buildApartment(){
   if(homeGroup){scene.remove(homeGroup);homeGroup=null;}
