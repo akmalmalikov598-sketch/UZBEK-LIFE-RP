@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>UZBEK LIFE RP</title>
+<style>
+:root{--g:#32d99a;--bg:#0d1620;--panel:rgba(13,22,32,.82);--line:rgba(255,255,255,.16);--js:clamp(104px,24vmin,150px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;overscroll-behavior:none;-webkit-user-select:none;user-select:none;touch-action:none}
+#game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none}
+.ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:20px;z-index:60}
+h1.logo{margin:0 0 6px;font-size:clamp(26px,6vw,40px);letter-spacing:.18em;color:var(--g);font-weight:800}
+#boot{z-index:100;background:radial-gradient(circle at 50% 38%,#17293b 0%,#0a1119 70%)}
+#boot p{color:#9fb2bf;margin:8px 0}
+#barwrap{width:min(78vw,320px);height:6px;border-radius:4px;background:#1d2d3b;overflow:hidden;margin-top:14px}
+#bootbar{height:100%;width:0;background:var(--g);transition:width .25s}
+#booterr{display:none;max-width:420px;margin-top:16px;color:#ffb4a8;font-size:14px;line-height:1.5}
+.btn{display:block;width:100%;padding:14px;margin-top:12px;background:var(--g);border:0;border-radius:10px;color:#0b2a1f;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.04em}
+.btn:hover{background:#63edb7}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.small{padding:8px;font-size:13px}
+.btn.dark{background:#1b2b3a;color:#dfe9ef;border:1px solid var(--line)}
+#login,#charcreate{display:none;background:linear-gradient(180deg,rgba(8,14,20,.85),rgba(8,14,20,.95))}
+#loginbox,#charbox{width:min(92vw,400px);padding:28px;background:rgba(18,30,41,.95);border:1px solid rgba(50,217,154,.35);border-radius:16px;text-align:left}
+#loginbox h1,#charbox h1{text-align:center}
+#loginbox p,#charbox p{color:#aebdc7;font-size:13px;margin:4px 0 16px;text-align:center}
+.tabs{display:flex;gap:8px;margin-bottom:16px}
+.tab{flex:1;padding:10px;background:#1b2b3a;border:1px solid #455966;border-radius:8px;color:#aebdc7;font-weight:700;font-size:13px;cursor:pointer}
+.tab.active{background:var(--g);color:#08251a;border-color:var(--g)}
+input.fld{width:100%;padding:14px;background:#0d1620;border:1px solid #455966;border-radius:10px;color:#fff;font-size:16px;outline:none;-webkit-user-select:text;user-select:text;margin-bottom:10px}
+input.fld:focus{border-color:var(--g)}
+#error{color:#ff8a80;font-size:13px;min-height:18px;margin-top:6px;text-align:center}
+.panel{position:fixed;z-index:10;background:var(--panel);border:1px solid var(--line);border-radius:12px;
