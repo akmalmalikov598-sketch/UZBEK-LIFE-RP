@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,13 +15,11 @@ from app.websocket import router as ws_router
 app = FastAPI(title=settings.PROJECT_NAME)
 app.include_router(ws_router)
 
-# Startup event (jadvallarni yaratish)
 @app.on_event("startup")
 async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-# --- Pydantic Modellari ---
 class UserRegister(BaseModel):
     username: str
     password: str
@@ -34,15 +32,19 @@ class CharacterCreate(BaseModel):
     first_name: str
     last_name: str
 
-# --- API ROUTES ---
-
 @app.post("/api/register")
 async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
+    # Parolni hash qilishda xatolik bo'lsa ushlab qolamiz
+    try:
+        hashed = get_password_hash(data.password)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Parol xatosi: {str(e)}")
+        
     result = await db.execute(select(User).where(User.username == data.username))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Bu username band")
     
-    new_user = User(username=data.username, password_hash=get_password_hash(data.password))
+    new_user = User(username=data.username, password_hash=hashed)
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
@@ -58,7 +60,6 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Username yoki parol xato")
     
-    # Personaj bor-yo'qligini tekshirish
     char_res = await db.execute(select(Character).where(Character.user_id == user.id))
     has_char = char_res.scalar_one_or_none() is not None
     
@@ -75,18 +76,16 @@ async def create_character(data: CharacterCreate, user: User = Depends(get_curre
         user_id=user.id, 
         first_name=data.first_name, 
         last_name=data.last_name,
-        x=10.0, z=10.0 # Boshlang'ich koordinata
+        x=10.0, z=10.0
     )
     db.add(char)
     await db.commit()
     return {"status": "ok"}
 
-# --- STATIC FAYLLAR ---
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
     return FileResponse("static/index.html")
 
-# Qolgan static fayllar (CSS, JS) uchun
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
