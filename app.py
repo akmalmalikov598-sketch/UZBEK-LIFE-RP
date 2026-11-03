@@ -25,9 +25,11 @@ import random
 import re
 import time
 import uuid
+import sqlite3
+import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
@@ -37,10 +39,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 # =========================
 
 GAME_NAME = "UZBEK LIFE RP"
-VERSION = "2.1.0"
+VERSION = "3.0.0"
 
 MAX_PLAYERS = 32
-WORLD_LIMIT = 120.0
+WORLD_LIMIT = 180.0
 TICK_RATE = 12              # server snapshot chastotasi (Hz)
 MAX_SPEED = 15.5            # klient yugurishi 13 u/s; qolgani kechikish zaxirasi
 BUDGET_CAP = 10.0           # to'planib qoladigan "masofa byudjeti" (birlik)
@@ -52,8 +54,8 @@ STALE_SECONDS = 45          # shuncha vaqt sukut bo'lsa - o'yinchi chiqariladi
 RECENT_SECONDS = 120        # qayta ulanganda oxirgi joyni eslab qolish muddati
 MAX_MESSAGE_SIZE = 1024
 
-ROADS = (-100, -60, -20, 20, 60, 100)
-BLOCKS = (-80, -40, 0, 40, 80)
+ROADS = (-160, -120, -80, -40, 0, 40, 80, 120, 160)
+BLOCKS = (-120, -80, -40, 0, 40, 80, 120)
 ROAD_HALF = 6.0
 CAR_LEN = 4.4
 CAR_WID = 1.9
@@ -103,10 +105,10 @@ class World:
                 if cx == 0 and cz == 0:
                     continue  # markaziy maydon (park + yodgorlik)
                 outer = max(abs(cx), abs(cz)) >= 80
-                floors = rng.randint(3, 7) if outer else rng.randint(4, 10)
+                floors = rng.randint(5, 12) if outer else rng.randint(7, 16)
                 self.boxes.append([
                     cx, cz,
-                    rng.choice((16, 20)), rng.choice((16, 20)),
+                    rng.choice((20, 24, 28)), rng.choice((20, 24, 28)),
                     floors * 4,
                     rng.randrange(5),
                     rng.randrange(1, 2 ** 31 - 1),
@@ -361,6 +363,50 @@ async def lifespan(application):
         pass
 
 
+# =========================
+# PERSISTENT LIFE SIMULATION (SQLite)
+# =========================
+DB_PATH = os.environ.get("DATABASE_PATH", "uzbek_life_rp.db")
+DB_LOCK = asyncio.Lock()
+SHOP = {
+    "non": {"title": "Non", "price": 5, "hunger": 18, "kind": "food"},
+    "lavash": {"title": "Lavash", "price": 25, "hunger": 45, "kind": "food"},
+    "osh": {"title": "Osh", "price": 35, "hunger": 60, "kind": "food"},
+    "suv": {"title": "Suv", "price": 4, "hunger": 8, "kind": "food"},
+    "medkit": {"title": "Tibbiy quti", "price": 80, "hunger": 0, "kind": "supply"},
+    "flashlight": {"title": "Fonар", "price": 45, "hunger": 0, "kind": "supply"},
+    "pistol": {"title": "O‘yin quroli", "price": 250, "hunger": 0, "kind": "game_item"},
+    "rifle": {"title": "O‘yin miltig‘i", "price": 650, "hunger": 0, "kind": "game_item"},
+    "luxury_car": {"title": "Premium avtomobil", "price": 12000, "hunger": 0, "kind": "vehicle"},
+    "sofa": {"title": "Divan", "price": 350, "hunger": 0, "kind": "furniture"},
+    "bed": {"title": "Krovat", "price": 500, "hunger": 0, "kind": "furniture"},
+    "tv": {"title": "Televizor", "price": 900, "hunger": 0, "kind": "furniture"},
+    "illegal_key": {"title": "Noqonuniy bozor kaliti", "price": 400, "hunger": 0, "kind": "illegal"},
+}
+
+def db_conn():
+    con = sqlite3.connect(DB_PATH, timeout=20)
+    con.row_factory = sqlite3.Row
+    return con
+
+def init_game_db():
+    con = db_conn()
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE IF NOT EXISTS accounts (token TEXT PRIMARY KEY, name TEXT NOT NULL, cash INTEGER NOT NULL DEFAULT 0, hunger INTEGER NOT NULL DEFAULT 100, inventory TEXT NOT NULL DEFAULT '{}', wanted INTEGER NOT NULL DEFAULT 0, jailed_until INTEGER NOT NULL DEFAULT 0, mine_at REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_accounts_name ON accounts(name)")
+        con.commit()
+    finally:
+        con.close()
+
+init_game_db()
+
+def account_state(row):
+    now = int(time.time())
+    return {"name": row["name"], "cash": row["cash"], "hunger": row["hunger"],
+            "inventory": json.loads(row["inventory"] or "{}"), "wanted": row["wanted"],
+            "jailed_until": max(0, row["jailed_until"]-now), "shop": SHOP}
+
 app = FastAPI(title=GAME_NAME, version=VERSION, lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -472,6 +518,13 @@ body.touch #help{display:none}
 
 <div id="help">W A S D — yurish &nbsp;|&nbsp; SHIFT — yugurish &nbsp;|&nbsp; SPACE — sakrash &nbsp;|&nbsp; Sichqoncha (bosib tortish) — kamera &nbsp;|&nbsp; G‘ildirak — masofa</div>
 
+<div id="lifePanel" class="panel" style="position:fixed;left:12px;bottom:64px;z-index:25;width:min(330px,calc(100vw - 24px));max-height:42vh;overflow:auto;color:#fff;font:12px system-ui">
+ <b style="color:#32d99a">HAYOT PANELI</b><div id="lifeStats">Hisob yuklanmoqda...</div>
+ <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px">
+  <button class="btn" onclick="lifeAction('mine')">⛏ KON</button><button class="btn" onclick="lifeAction('sleep')">🛏 UXLASH</button><button class="btn" onclick="lifeAction('wanted')">🚔 HOLAT</button>
+ </div><div id="lifeShop" style="display:grid;grid-template-columns:repeat(2,1fr);gap:5px;margin-top:7px"></div>
+ <small style="opacity:.7">Pul kon qazish orqali topiladi. Xaridlar hisobdan yechiladi.</small>
+</div>
 <div id="touch">
  <div id="joyzone"><div id="joybase"><div id="joyknob"></div></div></div>
  <div id="btns">
@@ -810,7 +863,7 @@ document.addEventListener('visibilitychange',function(){mon.t0=0;mon.low=0;mon.h
 let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
 function showHint(t){const h=document.getElementById('interactHint');if(h){h.textContent=t;h.style.display=t?'block':'none';}}
-function nearestBuilding(){let best=null,bd=999;for(const b of W.boxes){const x=b[0],z=b[1],d=b[3];const dx=me.pos.x-x,dz=me.pos.z-(z+d/2+1.8),dist=Math.hypot(dx,dz);if(dist<bd){bd=dist;best={b,dist};}}return best;}
+function nearestBuilding(){let best=null,bd=999;for(const b of W.boxes){const r=lcg(b[6]);for(let k=0;k<12;k++)r();const doorX=b[0]+(r()-0.5)*(b[2]-8);const doorZ=b[1]+b[3]/2+1.8;const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}}return best;}
 function buildWorld(){
  const lim=W.limit,R=W.roads,RH=W.road_half;
 
@@ -1022,16 +1075,16 @@ function buildWorld(){
   box(g,new THREE.BoxGeometry(1.15,3.5,0.12),metal,6.35,1.85,1.25);
   box(g,new THREE.BoxGeometry(1.15,3.5,0.12),metal,7.65,1.85,1.25);
   box(g,new THREE.BoxGeometry(0.28,1.5,0.12),mat(0x25292d,0.4),8.65,1.5,0.2);
-  for(let i=0;i<5;i++)box(g,new THREE.BoxGeometry(0.12,0.12,0.08),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c}),8.65,2.05-i*0.27,0.13);
+  for(let i=0;i<10;i++)box(g,new THREE.BoxGeometry(0.12,0.12,0.08),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c}),8.65,2.05-i*0.18,0.13);
   g.userData.elevatorY=0;
   return g;
  }
  function interact(){
-  if(insideHome){if(homeGroup){elevatorFloor=elevatorFloor%5+1;homeGroup.position.y=-35+(elevatorFloor-1)*3.1;toast('Lift: '+elevatorFloor+'-qavat');}return;}
+  if(insideHome){if(homeGroup){elevatorFloor=elevatorFloor%50+1;homeGroup.position.y=-35+(elevatorFloor-1)*3.1;toast('Lift: '+elevatorFloor+'-qavat / 50');}return;}
   if(activeCar){const car=activeCar;activeCar=null;me.pos.set(car.position.x+Math.sin(car.rotation.y)*2.8,0,car.position.z+Math.cos(car.rotation.y)*2.8);me.rot=car.rotation.y;me.avatar.visible=true;toast('Avtomobildan tushdingiz');return;}
   let nearest=null,dist=999;vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
   if(nearest&&dist<4.5){activeCar=nearest;me.avatar.visible=false;me.pos.set(nearest.position.x,0,nearest.position.z);toast('Mashina boshqaruvi: W/S gaz-tormoz, A/D burilish, SPACE qo‘l tormozi, E tushish');return;}
-  const b=nearestBuilding();if(b&&b.dist<5){homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};insideHome=true;elevatorFloor=1;buildApartment();me.pos.set(0,-35,0);me.avatar.visible=false;toast('Xonadonga xush kelibsiz. E — lift qavatini almashtirish, F — chiqish');}
+  const b=nearestBuilding();if(b&&b.dist<7){homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};insideHome=true;elevatorFloor=1;buildApartment();me.pos.set(0,-35,0);me.avatar.visible=false;toast('Xonadonga xush kelibsiz. E — 50 qavatli lift, F — chiqish');}
  }
  window.addEventListener('keydown',function(e){if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}if(e.code==='KeyF'&&insideHome){insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Binodan chiqdingiz');}});
  // --- daraxtlar va chiroqlar (instanced)
@@ -1441,7 +1494,7 @@ function updateMe(dt){
  let carNear=999;vehicles.forEach(v=>{carNear=Math.min(carNear,Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z));});
  const homeNear=nearestBuilding();
  if(carNear<4.5)hintText='E — avtomobilga o‘tirish';
- else if(homeNear&&homeNear.dist<5)hintText='E — binoga kirish';
+ else if(homeNear&&homeNear.dist<7)hintText='E — binoga kirish';
  showHint(hintText);
  const av=me.avatar;
  if(!activeCar&&!insideHome){av.visible=true;av.position.copy(me.pos);av.rotation.y=me.rot;animAvatar(av,me.speed,me.grounded,dt);}
@@ -1516,11 +1569,24 @@ window.addEventListener('resize',fitRenderer);
 window.addEventListener('orientationchange',function(){setTimeout(function(){fitRenderer();joyRest();},200);});
 
 // ======================= KIRISH OYNASI =======================
-function startPlaying(){
+let lifeToken=store('ulrp_token')||'';
+let lifeData=null;
+async function lifeRequest(path,body){
+ const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','Authorization':'Bearer '+lifeToken},body:body?JSON.stringify(body):undefined});
+ const d=await r.json();if(!r.ok)throw new Error(d.detail||'So‘rov bajarilmadi');return d;
+}
+function drawLife(){if(!lifeData)return;const s=$('lifeStats');s.innerHTML='💵 '+lifeData.cash+' so‘m &nbsp; 🍔 '+lifeData.hunger+'% &nbsp; ⭐ '+lifeData.wanted+'<br>🎒 '+Object.entries(lifeData.inventory||{}).map(([k,v])=>k+': '+v).join(', ');
+ const shop=$('lifeShop');shop.innerHTML='';Object.entries(lifeData.shop||{}).forEach(([id,item])=>{const b=document.createElement('button');b.className='btn';b.textContent=item.title+' · '+item.price;b.onclick=()=>lifeAction('buy',id);shop.appendChild(b);});}
+async function refreshLife(){try{lifeData=await lifeRequest('/api/state');drawLife();}catch(e){$('lifeStats').textContent=e.message;}}
+window.lifeAction=async function(action,item){try{const d=await lifeRequest('/api/action',{action,item});lifeData=d;drawLife();toast(d.message||'Bajarildi');}catch(e){toast(e.message);}};
+async function createLifeSession(name){const r=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Hisob ochilmadi');lifeToken=d.token;store('ulrp_token',lifeToken);lifeData=d.state;drawLife();}
+
+async function startPlaying(){
  const name=$('nickname').value.trim();
  if(name.length<3){$('error').textContent='Ism kamida 3 ta belgidan iborat bo‘lishi kerak';return;}
  myName=name.slice(0,20);store('ulrp_name',myName);
  $('error').textContent='';
+ try{await createLifeSession(myName);}catch(e){$('error').textContent=e.message;return;}
  $('login').style.display='none';
  try{document.activeElement.blur();}catch(e){}
  wantConnect=true;retry=0;connect();
@@ -1585,6 +1651,89 @@ async def health():
         "max_players": MAX_PLAYERS,
     })
 
+
+@app.post("/api/session")
+async def api_session(payload: dict):
+    name = clean_name(payload.get("name", "Player"))
+    token = secrets.token_urlsafe(32)
+    con = db_conn()
+    try:
+        old = con.execute("SELECT * FROM accounts WHERE name=? COLLATE NOCASE ORDER BY created_at LIMIT 1", (name,)).fetchone()
+        if old:
+            # Existing account token rotates on successful nickname login; game prototype has no password login yet.
+            con.execute("UPDATE accounts SET token=? WHERE token=?", (token, old["token"]))
+        else:
+            con.execute("INSERT INTO accounts(token,name,cash,hunger,inventory,wanted,jailed_until,mine_at,created_at) VALUES(?,?,0,100,'{}',0,0,0,?)", (token,name,int(time.time())))
+        con.commit()
+        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+        return {"token":token,"state":account_state(row)}
+    finally: con.close()
+
+def auth_account(request):
+    token=request.headers.get("Authorization","").replace("Bearer ","",1).strip()
+    if not token: raise HTTPException(status_code=401,detail="Hisob sessiyasi topilmadi")
+    con=db_conn()
+    row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+    con.close()
+    if not row: raise HTTPException(status_code=401,detail="Sessiya yaroqsiz")
+    return token,row
+
+@app.get("/api/state")
+async def api_state(request: Request):
+    token,row=auth_account(request)
+    con=db_conn()
+    try:
+        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+        return account_state(row)
+    finally: con.close()
+
+@app.post("/api/action")
+async def api_action(request: Request, payload: dict):
+    token,row=auth_account(request)
+    action=str(payload.get("action", ""))[:24]
+    item=str(payload.get("item", ""))[:32]
+    con=db_conn()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+        cash=int(row["cash"]); hunger=int(row["hunger"]); wanted=int(row["wanted"]); jailed=int(row["jailed_until"])
+        inv=json.loads(row["inventory"] or "{}")
+        now=int(time.time()); message=""
+        if jailed>now and action not in ("wanted",):
+            raise HTTPException(status_code=403,detail="Siz qamoqdasiz. Muddat tugashini kuting.")
+        if action=="mine":
+            last=float(row["mine_at"])
+            if time.time()-last<20: raise HTTPException(status_code=429,detail="Kon qayta ishlashi uchun 20 soniya kuting.")
+            reward=random.randint(35,90);cash+=reward;message=f"Kon qazib {reward} so‘m topdingiz."
+            con.execute("UPDATE accounts SET mine_at=? WHERE token=?",(time.time(),token))
+        elif action=="buy":
+            product=SHOP.get(item)
+            if not product: raise HTTPException(status_code=404,detail="Mahsulot topilmadi")
+            if cash<product["price"]: raise HTTPException(status_code=400,detail="Pul yetarli emas. Avval kon qazib pul toping.")
+            cash-=product["price"]
+            inv[item]=int(inv.get(item,0))+1
+            if product["kind"]=="illegal": wanted=min(5,wanted+1)
+            message=product["title"]+" sotib olindi."
+        elif action=="eat":
+            food=next((k for k in ("lavash","osh","non","suv") if inv.get(k,0)>0),None)
+            if not food: raise HTTPException(status_code=400,detail="Ovqat yo‘q. Do‘kondan sotib oling.")
+            inv[food]-=1;hunger=min(100,hunger+SHOP[food]["hunger"]);message="Ovqatlandingiz."
+        elif action=="sleep":
+            hunger=max(0,hunger-5);message="Dam oldingiz. Ochlik biroz oshdi."
+        elif action=="wanted":
+            if wanted>0:
+                jailed=now+max(60,wanted*300);wanted=0;message="Politsiya sizni ushladi. Qamoq muddati boshlandi."
+            else: message="Siz qidiruvda emassiz."
+        elif action=="crime":
+            wanted=min(5,wanted+1);message="Noqonuniy harakat qayd etildi. Politsiya qidiruvi oshdi."
+        else: raise HTTPException(status_code=400,detail="Noma’lum amal")
+        con.execute("UPDATE accounts SET cash=?,hunger=?,inventory=?,wanted=?,jailed_until=? WHERE token=?",(cash,hunger,json.dumps(inv),wanted,jailed,token))
+        con.commit()
+        fresh=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+        result=account_state(fresh);result["message"]=message;return result
+    except Exception:
+        con.rollback();raise
+    finally: con.close()
 
 @app.get("/favicon.ico")
 async def favicon():
