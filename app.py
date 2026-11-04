@@ -1521,9 +1521,6 @@ function doAttack(){
  window.addEventListener('keydown',function(e){
   if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}
   if(e.code==='KeyF'&&insideHome){insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Chiqdingiz');}if(e.code==='KeyF'&&insideShop){insideShop=false;if(shopGroup){scene.remove(shopGroup);shopGroup=null;}$('shopModal').classList.remove('show');me.pos.set(shopReturn.x,shopReturn.y,shopReturn.z);me.rot=shopReturn.rot;me.avatar.visible=true;toast('Do\'kondan chiqdingiz');}
-   me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;
-   toast('Binodan chiqdingiz');
-  }
   if(e.code==='KeyF'&&!insideHome&&!typing()){doAttack();e.preventDefault();}
   if(e.code==='KeyH'&&!typing()){
    if(insideShop){
