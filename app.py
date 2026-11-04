@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-UZBEK LIFE RP  v4.0  —  FastAPI + WebSocket + Three.js (bitta fayl)
-Katta hayot simulyatsiyasi: kon, zombilar, qurollar, ochlik, do'konlar,
-50-qavatli uylar, lift, kun/tun, politsiya, noqonuniy bozor.
+UZBEK LIFE RP  v5.0  —  Full immersive rebuild
+Haqiqiy shahar: fizik do'konlar, detallangan odamlar, mashinalar, uylar, kon.
 """
 
 import asyncio
@@ -28,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 # =========================
 
 GAME_NAME = "UZBEK LIFE RP"
-VERSION = "4.0.0"
+VERSION = "5.0.0"
 
 MAX_PLAYERS = 48
 WORLD_LIMIT = 220.0
@@ -1598,67 +1597,84 @@ function camBlocked(x,y,z){
 
 // Personaj
 const AG={};
-const SHIRTS=[0x2e86c1,0xc0392b,0x27ae60,0x8e44ad,0xd68910,0x17a589,0x34495e,0xe91e63,0x5d6d7e,0xf1c40f];
-const PANTS=[0x1f2a38,0x3b3f46,0x4a3b2a,0x2c3e50];
+const SHIRTS=[0x2e86c1,0xc0392b,0x27ae60,0x8e44ad,0xd68910,0x17a589,0x34495e,0xe91e63,0x5d6d7e,0xf1c40f,0xffffff,0x1a1a2e,0xd4af37];
+const PANTS=[0x1f2a38,0x3b3f46,0x4a3b2a,0x2c3e50,0x1a1a1a];
+const SKINS=[0xd6aa86,0xe0ad83,0xc58f68,0x9a674c,0x8d5524,0xf0c8a0];
+const HAIRS=[0x171717,0x2a1b12,0x463126,0x77716a,0xd4a017,0x1f2933];
 function avGeo(){
  if(AG.ready)return;AG.ready=true;
- AG.torso=new THREE.CapsuleGeometry(0.27,0.5,4,10);
- AG.head=new THREE.SphereGeometry(0.22,16,12);
- AG.hair=new THREE.SphereGeometry(0.235,16,10,0,TAU,0,Math.PI*0.52);
- AG.cap=new THREE.SphereGeometry(0.24,16,10,0,TAU,0,Math.PI*0.4);
- AG.leg=new THREE.CylinderGeometry(0.115,0.1,0.78,8);AG.leg.translate(0,-0.39,0);
- AG.arm=new THREE.CylinderGeometry(0.085,0.075,0.62,8);AG.arm.translate(0,-0.31,0);
- AG.hand=new THREE.SphereGeometry(0.085,8,6);
- AG.shoe=new THREE.BoxGeometry(0.2,0.1,0.32);
- AG.eye=new THREE.SphereGeometry(0.03,6,6);
- AG.nose=new THREE.BoxGeometry(0.05,0.06,0.05);
- AG.blob=new THREE.CircleGeometry(0.75,18);AG.blob.rotateX(-Math.PI/2);
+ AG.torso=new THREE.CapsuleGeometry(0.25,0.46,6,12);
+ AG.pelvis=new THREE.CapsuleGeometry(0.23,0.16,4,10);
+ AG.head=new THREE.SphereGeometry(0.20,16,14);
+ AG.hair=new THREE.SphereGeometry(0.215,14,10,0,TAU,0,Math.PI*0.55);
+ AG.cap=new THREE.SphereGeometry(0.225,14,10,0,TAU,0,Math.PI*0.4);
+ AG.thigh=new THREE.CapsuleGeometry(0.09,0.34,4,8);
+ AG.shin=new THREE.CapsuleGeometry(0.075,0.30,4,8);
+ AG.upperArm=new THREE.CapsuleGeometry(0.065,0.30,4,8);
+ AG.forearm=new THREE.CapsuleGeometry(0.055,0.26,4,8);
+ AG.hand=new THREE.SphereGeometry(0.065,8,6);
+ AG.shoe=new THREE.BoxGeometry(0.15,0.075,0.26);
+ AG.eye=new THREE.SphereGeometry(0.026,8,6);
+ AG.nose=new THREE.BoxGeometry(0.035,0.04,0.035);
+ AG.blob=new THREE.CircleGeometry(0.68,18);AG.blob.rotateX(-Math.PI/2);
  const c=document.createElement('canvas');c.width=c.height=64;
  const g=c.getContext('2d');const gr=g.createRadialGradient(32,32,2,32,32,32);
- gr.addColorStop(0,'rgba(0,0,0,0.75)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,64,64);
+ gr.addColorStop(0,'rgba(0,0,0,0.7)');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.fillRect(0,0,64,64);
  AG.blobMat=new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-3,polygonOffsetUnits:-3});
 }
 function makeNameSprite(text){
- const c=document.createElement('canvas');c.width=512;c.height=96;
+ const c=document.createElement('canvas');c.width=512;c.height=80;
  const g=c.getContext('2d');
- g.font='700 40px system-ui,Arial,sans-serif';g.textAlign='center';g.textBaseline='middle';
- const tw=Math.min(g.measureText(text).width+40,504);
- g.fillStyle='rgba(8,16,22,0.65)';roundRect(g,(512-tw)/2,14,tw,68,20);g.fill();
- g.fillStyle='#ffffff';g.fillText(text,256,50);
+ g.font='700 34px system-ui,Arial,sans-serif';g.textAlign='center';g.textBaseline='middle';
+ const tw=Math.min(g.measureText(text).width+36,500);
+ g.fillStyle='rgba(8,14,20,0.72)';roundRect(g,(512-tw)/2,12,tw,56,16);g.fill();
+ g.fillStyle='#ffffff';g.fillText(text,256,42);
  const t=new THREE.CanvasTexture(c);
  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false,fog:false}));
- s.scale.set(3.2,0.6,1);s.position.y=2.45;
+ s.scale.set(2.9,0.5,1);s.position.y=2.35;
  return s;
 }
 function makeAvatar(id,name,isMe){
  avGeo();
  const h=hashStr(id);
- const skin=mat(0xd6aa86,0.7),shirt=mat(isMe?0x25c78c:SHIRTS[h%SHIRTS.length],0.8),pants=mat(PANTS[(h>>>3)%PANTS.length],0.85);
+ const skin=mat(isMe?0xd6aa86:SKINS[h%SKINS.length],0.72);
+ const shirt=mat(isMe?0x25c78c:SHIRTS[h%SHIRTS.length],0.82);
+ const pants=mat(PANTS[(h>>>3)%PANTS.length],0.88);
+ const hairC=mat(HAIRS[(h>>>5)%HAIRS.length],0.92);
  const root=new THREE.Group(),body=new THREE.Group();root.add(body);
  const add=function(parent,geo,m,x,y,z){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.castShadow=true;parent.add(o);return o;};
- add(body,AG.torso,shirt,0,1.12,0);
- const head=add(body,AG.head,skin,0,1.84,0);
- add(body,AG.eye,mat(0x111111,0.5),-0.08,1.86,0.19);add(body,AG.eye,mat(0x111111,0.5),0.08,1.86,0.19);
- add(body,AG.nose,skin,0,1.82,0.22);
- if((h>>>6)%10<3){const cap=add(body,AG.cap,mat(0x1c2b4a,0.7),0,1.9,0);cap.rotation.x=-0.12;}
- else{const hair=add(body,AG.hair,mat(0x2a1b12,0.9),0,1.87,-0.01);hair.rotation.x=-0.25;}
- const mkLeg=function(sx){const p=new THREE.Group();p.position.set(sx*0.14,0.8,0);body.add(p);add(p,AG.leg,pants,0,0,0);add(p,AG.shoe,mat(0x15181b,0.9),0,-0.76,0.05);return p;};
- const mkArm=function(sx){const p=new THREE.Group();p.position.set(sx*0.37,1.42,0);body.add(p);add(p,AG.arm,shirt,0,0,0);add(p,AG.hand,skin,0,-0.64,0);return p;};
+ add(body,AG.torso,shirt,0,1.14,0);
+ add(body,AG.pelvis,pants,0,0.82,0);
+ const head=add(body,AG.head,skin,0,1.80,0);
+ add(body,AG.eye,mat(0x111111,0.4),-0.07,1.82,0.175);add(body,AG.eye,mat(0x111111,0.4),0.07,1.82,0.175);
+ add(body,AG.nose,skin,0,1.78,0.195);
+ if((h>>>6)%10<2){const cap=add(body,AG.cap,mat(0x1c2b4a,0.7),0,1.88,0);cap.rotation.x=-0.1;}
+ else{const hair=add(body,AG.hair,hairC,0,1.86,-0.015);hair.rotation.x=-0.22;}
+ const mkLeg=function(sx){
+  const p=new THREE.Group();p.position.set(sx*0.12,0.78,0);body.add(p);
+  add(p,AG.thigh,pants,0,-0.18,0);add(p,AG.shin,pants,0,-0.52,0);
+  add(p,AG.shoe,mat(0x15181b,0.9),0,-0.74,0.04);return p;
+ };
+ const mkArm=function(sx){
+  const p=new THREE.Group();p.position.set(sx*0.34,1.38,0);body.add(p);
+  add(p,AG.upperArm,shirt,0,-0.16,0);add(p,AG.forearm,skin,0,-0.48,0);
+  add(p,AG.hand,skin,0,-0.68,0);return p;
+ };
  root.userData={body:body,legL:mkLeg(-1),legR:mkLeg(1),armL:mkArm(-1),armR:mkArm(1),phase:Math.random()*6,amp:0,head:head};
  root.userData.sprite=makeNameSprite(name);root.add(root.userData.sprite);
- const blob=new THREE.Mesh(AG.blob,AG.blobMat);blob.position.y=0.05;blob.renderOrder=2;root.add(blob);
+ const blob=new THREE.Mesh(AG.blob,AG.blobMat);blob.position.y=0.04;blob.renderOrder=2;root.add(blob);
  scene.add(root);
  return root;
 }
 function animAvatar(av,speed,grounded,dt){
  const u=av.userData;
- const target=Math.min(speed/7,1.5)*(grounded?1:0.35);
+ const target=Math.min(speed/7,1.4)*(grounded?1:0.3);
  u.amp+=(target-u.amp)*Math.min(1,dt*12);
- u.phase+=dt*(4+speed*0.9);
- const sw=Math.sin(u.phase)*0.85*Math.min(u.amp,1.3);
- if(grounded){u.legL.rotation.x=sw;u.legR.rotation.x=-sw;u.armL.rotation.x=-sw*0.9;u.armR.rotation.x=sw*0.9;}
- else{u.legL.rotation.x=0.5;u.legR.rotation.x=-0.3;u.armL.rotation.x=-0.8;u.armR.rotation.x=-0.8;}
- u.body.position.y=Math.abs(Math.cos(u.phase))*0.05*Math.min(u.amp,1.2);
+ u.phase+=dt*(4.2+speed*0.85);
+ const sw=Math.sin(u.phase)*0.9*Math.min(u.amp,1.2);
+ if(grounded){u.legL.rotation.x=sw;u.legR.rotation.x=-sw;u.armL.rotation.x=-sw*0.85;u.armR.rotation.x=sw*0.85;}
+ else{u.legL.rotation.x=0.45;u.legR.rotation.x=-0.25;u.armL.rotation.x=-0.75;u.armR.rotation.x=-0.75;}
+ u.body.position.y=Math.abs(Math.cos(u.phase))*0.04*Math.min(u.amp,1);
 }
 function disposeAvatar(av){
  scene.remove(av);
