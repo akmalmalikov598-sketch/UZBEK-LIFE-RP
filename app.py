@@ -361,7 +361,6 @@ DB_PATH = os.environ.get("DATABASE_PATH", "uzbek_life_rp.db")
 DB_LOCK = asyncio.Lock()
 
 SHOP = {
-    # Oziq-ovqat
     "non": {"title": "Non", "price": 5, "hunger": 15, "kind": "food"},
     "lavash": {"title": "Lavash", "price": 22, "hunger": 40, "kind": "food"},
     "osh": {"title": "Palov (Osh)", "price": 35, "hunger": 55, "kind": "food"},
@@ -374,37 +373,55 @@ SHOP = {
     "kola": {"title": "Kola", "price": 8, "hunger": 6, "kind": "food"},
     "pirojnoe": {"title": "Pirojnoe", "price": 15, "hunger": 18, "kind": "food"},
     "pitsa": {"title": "Pitsa", "price": 45, "hunger": 58, "kind": "food"},
-    # Tibbiy
+    "burger": {"title": "Burger", "price": 28, "hunger": 38, "kind": "food"},
+    "hotdog": {"title": "Hot-dog", "price": 18, "hunger": 25, "kind": "food"},
+    "kabob": {"title": "Kabob", "price": 32, "hunger": 44, "kind": "food"},
+    "coffee": {"title": "Qahva", "price": 12, "hunger": 8, "kind": "food"},
+    "plov_big": {"title": "Katta palov", "price": 55, "hunger": 75, "kind": "food"},
+    "norin": {"title": "Norin", "price": 38, "hunger": 50, "kind": "food"},
+    "shurva": {"title": "Sho'rva", "price": 25, "hunger": 35, "kind": "food"},
+    "dimlama": {"title": "Dimlama", "price": 42, "hunger": 60, "kind": "food"},
     "medkit": {"title": "Tibbiy quti", "price": 80, "hunger": 0, "kind": "supply", "heal": 50},
     "bandage": {"title": "Bint", "price": 25, "hunger": 0, "kind": "supply", "heal": 20},
     "energy": {"title": "Energiya ichimligi", "price": 35, "hunger": 10, "kind": "supply"},
-    # Qurollar (oddiy)
+    "painkiller": {"title": "Og'riq qoldiruvchi", "price": 45, "hunger": 0, "kind": "supply", "heal": 30},
+    "flashlight": {"title": "Fonар", "price": 55, "hunger": 0, "kind": "supply"},
+    "phone": {"title": "Telefon", "price": 400, "hunger": 0, "kind": "supply"},
     "bat": {"title": "Beyzbol tayoq", "price": 120, "hunger": 0, "kind": "weapon", "dmg": 18},
     "knife": {"title": "Pichoq", "price": 180, "hunger": 0, "kind": "weapon", "dmg": 25},
+    "knuckle": {"title": "Kastet", "price": 90, "hunger": 0, "kind": "weapon", "dmg": 15},
     "pistol": {"title": "Pistolet", "price": 450, "hunger": 0, "kind": "weapon", "dmg": 40},
+    "revolver": {"title": "Revolver", "price": 600, "hunger": 0, "kind": "weapon", "dmg": 48},
     "shotgun": {"title": "Miltiq", "price": 900, "hunger": 0, "kind": "weapon", "dmg": 70},
+    "smg": {"title": "PP (SMG)", "price": 1400, "hunger": 0, "kind": "weapon", "dmg": 42},
     "rifle": {"title": "Avtomat", "price": 1800, "hunger": 0, "kind": "weapon", "dmg": 55},
+    "sniper": {"title": "Snayper", "price": 3500, "hunger": 0, "kind": "weapon", "dmg": 90},
     "ammo": {"title": "O'q-dori x20", "price": 60, "hunger": 0, "kind": "ammo"},
-    # Mebel
+    "ammo_box": {"title": "O'q qutisi x50", "price": 130, "hunger": 0, "kind": "ammo"},
     "sofa": {"title": "Divan", "price": 350, "hunger": 0, "kind": "furniture"},
     "bed": {"title": "Krovat", "price": 500, "hunger": 0, "kind": "furniture"},
     "tv": {"title": "Televizor", "price": 900, "hunger": 0, "kind": "furniture"},
     "fridge": {"title": "Muzlatgich", "price": 1100, "hunger": 0, "kind": "furniture"},
     "table": {"title": "Stol to'plami", "price": 280, "hunger": 0, "kind": "furniture"},
-    # Transport
+    "wardrobe": {"title": "Shkaf", "price": 420, "hunger": 0, "kind": "furniture"},
+    "pc": {"title": "Kompyuter", "price": 1500, "hunger": 0, "kind": "furniture"},
     "luxury_car": {"title": "Premium sport avto", "price": 25000, "hunger": 0, "kind": "vehicle"},
     "suv": {"title": "SUV", "price": 15000, "hunger": 0, "kind": "vehicle"},
-    # Noqonuniy
+    "sedan": {"title": "Sedan", "price": 9000, "hunger": 0, "kind": "vehicle"},
+    "bike": {"title": "Mototsikl", "price": 4500, "hunger": 0, "kind": "vehicle"},
     "illegal_key": {"title": "Noqonuniy bozor kaliti", "price": 400, "hunger": 0, "kind": "illegal"},
     "black_pistol": {"title": "Qora bozor pistoleti", "price": 700, "hunger": 0, "kind": "illegal_weapon", "dmg": 48},
     "black_rifle": {"title": "Qora avtomat", "price": 2800, "hunger": 0, "kind": "illegal_weapon", "dmg": 65},
+    "black_sniper": {"title": "Qora snayper", "price": 5000, "hunger": 0, "kind": "illegal_weapon", "dmg": 100},
     "drugs": {"title": "Noqonuniy modda", "price": 350, "hunger": 0, "kind": "illegal"},
     "fake_docs": {"title": "Soxta hujjatlar", "price": 500, "hunger": 0, "kind": "illegal"},
+    "lockpick": {"title": "Qulf ochgich", "price": 250, "hunger": 0, "kind": "illegal"},
 }
 
 WEAPON_DMG = {
-    "bat": 18, "knife": 25, "pistol": 40, "shotgun": 70, "rifle": 55,
-    "black_pistol": 48, "black_rifle": 65, "fist": 8,
+    "bat": 18, "knife": 25, "knuckle": 15, "pistol": 40, "revolver": 48,
+    "shotgun": 70, "smg": 42, "rifle": 55, "sniper": 90,
+    "black_pistol": 48, "black_rifle": 65, "black_sniper": 100, "fist": 8,
 }
 
 
@@ -1127,12 +1144,30 @@ function buildWorld(){
   colliders.push([sx,sz,w/2,d/2,h]);
  }
  // Markaz atrofida do'konlar
+ // Ko'p haqiqiy do'kon va joylar
  placeShop(28,28,'SUPERMARKET','shop',0xc8b89a);
  placeShop(-32,28,'QUROLLAR DOKONI','weapon',0x5a6a7a);
- placeShop(28,-32,'OSHXONA','shop',0xd4a574);
+ placeShop(28,-32,'OSHXONA VA KAFE','shop',0xd4a574);
  placeShop(-28,-32,'NOQONUNIY BOZOR','blackmarket',0x3a2a2a);
  placeShop(55,0,'MEBEL DOKONI','shop',0x8a9a7a);
  placeShop(0,55,'FARMATSEVTIKA','shop',0xe8e0d0);
+ placeShop(70,40,'AVTOSALON','shop',0x4a90c2);
+ placeShop(-70,40,'KAFE','shop',0xc49a6c);
+ placeShop(40,70,'TEZ OVQAT','shop',0xe67e22);
+ placeShop(-40,70,'NONVAXONA','shop',0xd4c08f);
+ placeShop(70,-40,'ELEKTRONIKA','shop',0x5d6d7e);
+ placeShop(-70,-40,'KIYIM DOKONI','shop',0x8e44ad);
+ placeShop(90,20,'SPORT ZAL','shop',0x27ae60);
+ placeShop(-90,20,'BANK','bank',0x1a5276);
+ placeShop(20,90,'SHIFOXONA','hospital',0xe8f6f3);
+ placeShop(-20,90,'POLITSIYA','police',0x2c3e50);
+ placeShop(90,-20,'YOQILGI','gas',0xf39c12);
+ placeShop(-90,-20,'TAKSI PARK','taxi',0xf1c40f);
+ placeShop(0,-70,'KAZINO','casino',0x6c3483);
+ placeShop(60,60,'BAR','shop',0x922b21);
+ placeShop(-60,60,'GUL DOKONI','shop',0xe91e63);
+ placeShop(60,-60,'KITOB DOKONI','shop',0x5d4037);
+ placeShop(-60,-60,'OYINCHOQ','shop',0x3498db);
 
  // ========== SILLIQROQ MASHINALAR ==========
  const cars=W.cars; vehicles=[];
@@ -1454,7 +1489,7 @@ function buildCityPopulation(){
  const hair=[0x171717,0x463126,0x77716a,0x1f2933,0xd4a017];
  const geo={body:new THREE.CapsuleGeometry(0.29,0.72,4,8),head:new THREE.SphereGeometry(0.22,12,10),leg:new THREE.CapsuleGeometry(0.105,0.48,3,7),arm:new THREE.CapsuleGeometry(0.085,0.48,3,7)};
  cityNPCs=[];
- for(let i=0;i<110;i++){
+ for(let i=0;i<160;i++){
   const g=new THREE.Group();
   const wealth=rng()<0.07?'boy':(rng()<0.4?'kambagal':'oddiy');
   const shirtC=wealth==='boy'?[0xd4af37,0x1a1a2e,0xffffff][(rng()*3)|0]:clothes[(rng()*clothes.length)|0];
@@ -2017,6 +2052,34 @@ function openShopFiltered(kind,title){
  if(!lifeData){toast('Avval kiring');return;}
  currentShopKind=kind||'shop';
  currentShopTitle=title||'DO\'KON';
+ // Maxsus joylar — to'g'ridan-to'g'ri amal
+ if(kind==='hospital'){
+  lifeAction('heal_hospital');
+  return;
+ }
+ if(kind==='police'){
+  lifeAction('wanted');
+  return;
+ }
+ if(kind==='bank'){
+  toast('Bank: hisobingizda '+lifeData.cash+' so\'m. Pul kondan va ishlardan keladi.');
+  return;
+ }
+ if(kind==='gas'){
+  if(activeCar){toast('Bak to\'ldirildi. Yo\'lga chiqing!');}
+  else toast('Avval mashinaga o\'tiring, keyin yoqilg\'i quying.');
+  return;
+ }
+ if(kind==='taxi'){
+  toast('Taksi: shahar bo\'ylab yuring, yo\'lovchi kuting (tez orada to\'liq ish).');
+  return;
+ }
+ if(kind==='casino'){
+  const bet=Math.min(100,lifeData.cash);
+  if(bet<10){toast('Kazino: kamida 10 so\'m kerak');return;}
+  lifeAction('gamble');
+  return;
+ }
  const list=$('shopList');list.innerHTML='';
  const h=document.querySelector('#shopModal h3');if(h)h.textContent=currentShopTitle;
  const shop=lifeData.shop||{};
@@ -2057,11 +2120,15 @@ function openInv(){
  });
  $('invModal').classList.add('show');
 }
-// HUD tugmasi olib tashlandi — do'konlar faqat shaharda (E)
+// Tugmalar yo'q — hammasi dunyoda (E). Inventar: I tugmasi
 if($('shopbtn'))$('shopbtn').style.display='none';
-$('invbtn').onclick=openInv;
+if($('invbtn'))$('invbtn').style.display='none';
 $('shopClose').onclick=function(){$('shopModal').classList.remove('show');};
 $('invClose').onclick=function(){$('invModal').classList.remove('show');};
+window.addEventListener('keydown',function(e){
+ if(typing())return;
+ if(e.code==='KeyI'){openInv();e.preventDefault();}
+});
 
 // O'yin tsikli
 let lastT=0,frameErr=false,hungerTick=0;
@@ -2305,6 +2372,26 @@ async def api_action(request: Request, payload: dict):
         elif action == "crime":
             wanted = min(5, wanted + 1)
             message = "Noqonuniy harakat qayd etildi. Politsiya qidiruvi oshdi."
+
+        elif action == "heal_hospital":
+            cost = 100
+            if cash < cost:
+                raise HTTPException(status_code=400, detail="Shifoxona: 100 so'm kerak")
+            cash -= cost
+            hp = 100
+            message = "Shifoxonada davolandingiz. HP to'liq."
+
+        elif action == "gamble":
+            bet = min(150, max(10, cash // 10))
+            if cash < bet:
+                raise HTTPException(status_code=400, detail="Kazino uchun pul yetarli emas")
+            if random.random() < 0.45:
+                win = bet * 2
+                cash += win
+                message = f"Kazino: yutdingiz! +{win} so'm"
+            else:
+                cash -= bet
+                message = f"Kazino: yutqazdingiz -{bet} so'm"
 
         else:
             raise HTTPException(status_code=400, detail="Noma’lum amal")
