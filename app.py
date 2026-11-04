@@ -21,17 +21,36 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-# Phase 1b: server package
-_PKG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uzbek_life_rp")
-if _PKG not in sys.path:
-    sys.path.insert(0, _PKG)
+# Phase 1b: server package — Render va lokal papkalar uchun import yo'llari
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIRS = [
+    _BASE_DIR,
+    os.path.join(_BASE_DIR, "uzbek_life_rp"),
+    os.path.join(_BASE_DIR, "backend"),
+    os.path.join(_BASE_DIR, "backend", "uzbek_life_rp"),
+    os.path.join(_BASE_DIR, "src"),
+    os.path.join(_BASE_DIR, "src", "uzbek_life_rp"),
+]
+# Render Root Directory ichida app.py yoki server/ paketi turishi mumkin.
+for _candidate in _PROJECT_DIRS:
+    if os.path.isdir(_candidate) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
 try:
     from server import database as life_db
     from server.shop_catalog import SHOP as LIFE_SHOP
     from server.config import VERSION as PKG_VERSION
     LIFE_DB_OK = True
+    print("life_db: server package loaded")
+except (ImportError, ModuleNotFoundError) as _e:
+    # Legacy rejimda server paketi bo'lmasa ham asosiy o'yin ishga tushadi.
+    print("life_db package not found; legacy mode enabled:", str(_e))
+    LIFE_DB_OK = False
+    LIFE_SHOP = {}
+    PKG_VERSION = "5.0.0"
 except Exception as _e:
-    print("life_db import failed:", _e)
+    # Import vaqtida paket ichidagi boshqa xatolarni ham serverni yiqitmasdan qayd etamiz.
+    print("life_db package load error:", repr(_e))
     LIFE_DB_OK = False
     LIFE_SHOP = {}
     PKG_VERSION = "5.0.0"
