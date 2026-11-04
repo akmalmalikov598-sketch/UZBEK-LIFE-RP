@@ -925,16 +925,23 @@ let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
 let zombies=[];
 let mineMarker=null;
+let buildingDoors=[]; // {x,z,quality,label}
+let shopZones=[];    // {x,z,r,kind,title}  kind: shop | blackmarket | weapon
 
 function showHint(t){const h=document.getElementById('interactHint');if(h){h.textContent=t;h.style.display=t?'block':'none';}}
 function nearestBuilding(){
  let best=null,bd=999;
- for(const b of W.boxes){
-  const r=lcg(b[6]);for(let k=0;k<15;k++)r();
-  const doorX=b[0]+(r()-0.5)*(b[2]-8);
-  const doorZ=b[1]+b[3]/2+1.8;
-  const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);
-  if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}
+ for(const d of buildingDoors){
+  const dist=Math.hypot(me.pos.x-d.x,me.pos.z-d.z);
+  if(dist<bd){bd=dist;best={dist,doorX:d.x,doorZ:d.z,quality:d.quality};}
+ }
+ return best;
+}
+function nearestShop(){
+ let best=null,bd=999;
+ for(const s of shopZones){
+  const dist=Math.hypot(me.pos.x-s.x,me.pos.z-s.z);
+  if(dist<bd){bd=dist;best={...s,dist};}
  }
  return best;
 }
@@ -1076,58 +1083,122 @@ function buildWorld(){
    add(new THREE.BoxGeometry(1.7+rnd()*1.5,1.1+rnd()*0.9,1.7+rnd()*1.3),acMat,x+ax,h+PT+0.6,z+az);
   }
   const dx=(rnd()-0.5)*(w-10);
-  add(new THREE.BoxGeometry(3.8,3.0,0.22),doorMat,x+dx,PT+1.55,z+d/2+0.12,false);
-  add(new THREE.BoxGeometry(5.0,0.2,1.4),awnMats[(rnd()*awnMats.length)|0],x+dx,PT+3.5,z+d/2+0.7);
+  const doorX=x+dx, doorZ=z+d/2+1.5;
+  add(new THREE.BoxGeometry(3.8,3.0,0.22),doorMat,doorX,PT+1.55,z+d/2+0.12,false);
+  add(new THREE.BoxGeometry(5.0,0.2,1.4),awnMats[(rnd()*awnMats.length)|0],doorX,PT+3.5,z+d/2+0.7);
+  // Eshik zonasi — to'qnashuvdan ozod (kichik bo'shliq)
+  buildingDoors.push({x:doorX,z:doorZ,quality:rnd()>0.45?1:0});
   colliders.push([x,z,w/2,d/2,h]);
  });
  colliders.push([W.monument[0],W.monument[1],W.monument[2],W.monument[3],16]);
 
- // Sport / Lambo uslubidagi mashinalar
+ // ========== HAQIQIY DO'KONLAR (fizik binolar) ==========
+ function makeShopSign(text,col){
+  const c=document.createElement('canvas');c.width=512;c.height=128;
+  const g=c.getContext('2d');
+  g.fillStyle='#0d1620';g.fillRect(0,0,512,128);
+  g.fillStyle=col||'#32d99a';
+  g.font='bold 48px system-ui,Arial';g.textAlign='center';g.textBaseline='middle';
+  g.fillText(text,256,64);
+  const t=new THREE.CanvasTexture(c);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false}));
+  sp.scale.set(8,2,1);
+  return sp;
+ }
+ function placeShop(sx,sz,title,kind,wallColor){
+  const w=14,d=12,h=7;
+  const body=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(wallColor,0.75));
+  body.position.set(sx,h/2+0.08,sz);body.castShadow=true;body.receiveShadow=true;scene.add(body);
+  const roof=new THREE.Mesh(new THREE.BoxGeometry(w+0.8,0.4,d+0.8),mat(0x2a3038,0.9));
+  roof.position.set(sx,h+0.3,sz);scene.add(roof);
+  // Vitrina oynasi
+  const glass=new THREE.Mesh(new THREE.BoxGeometry(w*0.7,3.2,0.15),new THREE.MeshPhysicalMaterial({color:0x88c4e0,roughness:0.1,metalness:0.1,transparent:true,opacity:0.45}));
+  glass.position.set(sx,2.2,sz+d/2+0.08);scene.add(glass);
+  // Eshik
+  const door=new THREE.Mesh(new THREE.BoxGeometry(2.4,3.0,0.18),mat(0x1a2830,0.3));
+  door.position.set(sx-3.5,1.6,sz+d/2+0.1);scene.add(door);
+  // Belgi
+  const sign=makeShopSign(title,kind==='blackmarket'?'#ff6644':'#32d99a');
+  sign.position.set(sx,h+1.8,sz+d/2+0.5);scene.add(sign);
+  // Yoritgich
+  const lamp=new THREE.PointLight(kind==='blackmarket'?0xff4422:0xffe8b0,0.9,18);
+  lamp.position.set(sx,h+0.5,sz+d/2+1);scene.add(lamp);
+  shopZones.push({x:sx,z:sz+d/2+2.5,r:5.5,kind:kind,title:title});
+  colliders.push([sx,sz,w/2,d/2,h]);
+ }
+ // Markaz atrofida do'konlar
+ placeShop(28,28,'SUPERMARKET','shop',0xc8b89a);
+ placeShop(-32,28,'QUROLLAR DOKONI','weapon',0x5a6a7a);
+ placeShop(28,-32,'OSHXONA','shop',0xd4a574);
+ placeShop(-28,-32,'NOQONUNIY BOZOR','blackmarket',0x3a2a2a);
+ placeShop(55,0,'MEBEL DOKONI','shop',0x8a9a7a);
+ placeShop(0,55,'FARMATSEVTIKA','shop',0xe8e0d0);
+
+ // ========== SILLIQROQ MASHINALAR ==========
  const cars=W.cars; vehicles=[];
  const carPaint=[0xf2f2f2,0x0a0a0c,0xc0c5cc,0xc41e1a,0x1a4f9c,0x5a6570,0x1a6b3c,0xd4c08a,0xff6b00,0x7b2cbf];
- const glassMat=new THREE.MeshPhysicalMaterial({color:0x0a1822,roughness:0.08,metalness:0.3,transparent:true,opacity:0.72,clearcoat:1});
+ const glassMat=new THREE.MeshPhysicalMaterial({color:0x0a1822,roughness:0.06,metalness:0.25,transparent:true,opacity:0.68,clearcoat:1,clearcoatRoughness:0.1});
  const rubberMat=new THREE.MeshStandardMaterial({color:0x0c0e10,roughness:0.96});
- const alloyMat=new THREE.MeshStandardMaterial({color:0xb0b8c0,roughness:0.22,metalness:0.9});
- const lampMat=new THREE.MeshStandardMaterial({color:0xfff5e0,emissive:0xffe0a0,emissiveIntensity:1.8,roughness:0.15});
- const tailMat=new THREE.MeshStandardMaterial({color:0xaa1010,emissive:0x880808,emissiveIntensity:1.0});
- function box(parent,geo,material,x,y,z){const o=new THREE.Mesh(geo,material);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;parent.add(o);return o;}
+ const alloyMat=new THREE.MeshStandardMaterial({color:0xb0b8c0,roughness:0.18,metalness:0.92});
+ const lampMat=new THREE.MeshStandardMaterial({color:0xfff5e0,emissive:0xffe0a0,emissiveIntensity:1.8,roughness:0.12});
+ const tailMat=new THREE.MeshStandardMaterial({color:0xaa1010,emissive:0x880808,emissiveIntensity:1.1});
+ function box(parent,geo,material,x,y,z,rx,ry,rz){
+  const o=new THREE.Mesh(geo,material);o.position.set(x,y,z);
+  if(rx)o.rotation.x=rx;if(ry)o.rotation.y=ry;if(rz)o.rotation.z=rz;
+  o.castShadow=true;o.receiveShadow=true;parent.add(o);return o;
+ }
 
  cars.forEach(function(c,i){
   const root=new THREE.Group();root.position.set(c[0],0,c[1]);root.rotation.y=c[2]==='x'?Math.PI/2:0;scene.add(root);
-  const isSport=c[3]>=7;
-  const paint=new THREE.MeshStandardMaterial({color:carPaint[c[3]%carPaint.length],roughness:isSport?0.18:0.28,metalness:isSport?0.55:0.42,envMapIntensity:1.3});
-  // Pastki korpus
-  box(root,new THREE.BoxGeometry(isSport?1.95:2.05,0.38,isSport?4.7:4.5),paint,0,0.55,0);
-  // Kapot + salon
-  box(root,new THREE.BoxGeometry(isSport?1.85:1.92,0.32,isSport?2.1:2.0),paint,0,0.95,isSport?0.35:0.2);
+  const isSport=c[3]>=6;
+  const paint=new THREE.MeshStandardMaterial({color:carPaint[c[3]%carPaint.length],roughness:isSport?0.14:0.24,metalness:isSport?0.62:0.48,envMapIntensity:1.4});
+  // Silliqroq korpus: bir nechta qism + yumaloq qirralar (capsule/sphere qo'shimchalari)
+  // Asosiy pastki
+  box(root,new THREE.BoxGeometry(isSport?1.88:2.0,0.32,isSport?4.5:4.35),paint,0,0.48,0);
+  // Yon silliq qirralar
+  box(root,new THREE.CylinderGeometry(0.22,0.22,isSport?4.3:4.15,10),paint,0.88,0.48,0,0,0,Math.PI/2);
+  box(root,new THREE.CylinderGeometry(0.22,0.22,isSport?4.3:4.15,10),paint,-0.88,0.48,0,0,0,Math.PI/2);
+  // Kapot (old)
+  box(root,new THREE.BoxGeometry(isSport?1.78:1.88,0.22,isSport?1.6:1.5),paint,0,0.78,isSport?1.15:1.05);
+  // Old qismi yumaloq
+  box(root,new THREE.SphereGeometry(0.55,12,8,0,Math.PI,0,Math.PI),paint,0,0.55,isSport?2.15:2.05,Math.PI/2,0,0);
   // Kabina
-  box(root,new THREE.BoxGeometry(1.72,0.52,isSport?2.0:2.15),paint,0,1.22,isSport?-0.35:-0.15);
-  box(root,new THREE.BoxGeometry(1.62,0.42,isSport?1.85:2.0),glassMat,0,1.28,isSport?-0.35:-0.15);
-  // Sport uchun past profil va spoilers
+  box(root,new THREE.BoxGeometry(1.65,0.48,isSport?1.9:2.05),paint,0,1.12,isSport?-0.25:-0.1);
+  box(root,new THREE.BoxGeometry(1.55,0.4,isSport?1.75:1.9),glassMat,0,1.18,isSport?-0.25:-0.1);
+  // Orqa
+  box(root,new THREE.BoxGeometry(isSport?1.78:1.88,0.28,isSport?1.1:1.2),paint,0,0.82,isSport?-1.55:-1.45);
   if(isSport){
-   box(root,new THREE.BoxGeometry(1.7,0.08,0.45),paint,0,1.55,-2.0);
-   box(root,new THREE.BoxGeometry(0.12,0.25,0.35),paint,-0.75,1.65,-2.05);
-   box(root,new THREE.BoxGeometry(0.12,0.25,0.35),paint,0.75,1.65,-2.05);
+   // Spoiler
+   box(root,new THREE.BoxGeometry(1.65,0.06,0.4),paint,0,1.48,-2.05);
+   box(root,new THREE.BoxGeometry(0.1,0.22,0.3),paint,-0.72,1.55,-2.05);
+   box(root,new THREE.BoxGeometry(0.1,0.22,0.3),paint,0.72,1.55,-2.05);
+   // Yon havo kirish
+   box(root,new THREE.BoxGeometry(0.08,0.28,0.7),mat(0x111111,0.5),0.95,0.7,0.2);
+   box(root,new THREE.BoxGeometry(0.08,0.28,0.7),mat(0x111111,0.5),-0.95,0.7,0.2);
   }
   // O'rindiqlar
-  [-0.42,0.42].forEach(x=>{box(root,new THREE.BoxGeometry(0.55,0.18,0.55),mat(0x1a1e24,0.85),x,0.95,0.35);box(root,new THREE.BoxGeometry(0.55,0.55,0.14),mat(0x222830,0.85),x,1.25,0.58);});
-  // Bamper va chiroqlar
-  box(root,new THREE.BoxGeometry(1.88,0.18,0.14),mat(0x222830,0.5),0,0.42,2.35);
-  box(root,new THREE.BoxGeometry(1.88,0.18,0.14),mat(0x222830,0.5),0,0.42,-2.35);
-  [-0.62,0.62].forEach(x=>{box(root,new THREE.BoxGeometry(0.38,0.16,0.05),lampMat,x,0.72,2.34);box(root,new THREE.BoxGeometry(0.38,0.16,0.05),tailMat,x,0.72,-2.34);});
+  [-0.4,0.4].forEach(x=>{box(root,new THREE.BoxGeometry(0.5,0.16,0.5),mat(0x1a1e24,0.85),x,0.9,0.3);box(root,new THREE.BoxGeometry(0.5,0.5,0.12),mat(0x222830,0.85),x,1.18,0.52);});
+  // Bamper
+  box(root,new THREE.BoxGeometry(1.8,0.14,0.12),mat(0x1a1e24,0.45),0,0.38,2.2);
+  box(root,new THREE.BoxGeometry(1.8,0.14,0.12),mat(0x1a1e24,0.45),0,0.38,-2.2);
+  // Chiroqlar (yumaloq)
+  [-0.55,0.55].forEach(x=>{
+   box(root,new THREE.SphereGeometry(0.14,10,8),lampMat,x,0.65,2.18);
+   box(root,new THREE.SphereGeometry(0.12,8,6),tailMat,x,0.65,-2.18);
+  });
   // G'ildiraklar
   const wheels=[];
-  const wheelZ=isSport?[-1.55,1.5]:[-1.48,1.48];
-  [-0.95,0.95].forEach(x=>wheelZ.forEach(z=>{
-   const w=new THREE.Group();w.position.set(x,0.36,z);root.add(w);
-   const tire=box(w,new THREE.CylinderGeometry(isSport?0.36:0.38,isSport?0.36:0.38,0.24,18),rubberMat,0,0,0);tire.rotation.z=Math.PI/2;
-   const rim=box(w,new THREE.CylinderGeometry(0.20,0.20,0.26,14),alloyMat,0,0,0);rim.rotation.z=Math.PI/2;
+  const wheelZ=isSport?[-1.5,1.45]:[-1.42,1.42];
+  [-0.92,0.92].forEach(x=>wheelZ.forEach(z=>{
+   const w=new THREE.Group();w.position.set(x,0.34,z);root.add(w);
+   const tire=box(w,new THREE.CylinderGeometry(isSport?0.34:0.36,isSport?0.34:0.36,0.22,16),rubberMat,0,0,0,0,0,Math.PI/2);
+   const rim=box(w,new THREE.CylinderGeometry(0.18,0.18,0.24,12),alloyMat,0,0,0,0,0,Math.PI/2);
    wheels.push(w);
   }));
-  const steering=new THREE.Mesh(new THREE.TorusGeometry(0.17,0.03,8,18),alloyMat);steering.position.set(-0.42,1.22,0.42);steering.rotation.y=Math.PI/2;root.add(steering);
+  const steering=new THREE.Mesh(new THREE.TorusGeometry(0.15,0.028,8,16),alloyMat);steering.position.set(-0.38,1.15,0.38);steering.rotation.y=Math.PI/2;root.add(steering);
   root.userData={id:i,baseX:c[0],baseZ:c[1],speed:0,steer:0,steering,wheels,paint,sport:isSport};
   vehicles.push(root);
-  if(c[2]==='x')colliders.push([c[0],c[1],2.4,1.1,1.6]);else colliders.push([c[0],c[1],1.1,2.4,1.6]);
+  if(c[2]==='x')colliders.push([c[0],c[1],2.35,1.05,1.5]);else colliders.push([c[0],c[1],1.05,2.35,1.5]);
  });
 
  // Kon zonasi belgilari + zombilar
@@ -1231,29 +1302,37 @@ function buildWorld(){
    toast('Avtomobildan tushdingiz');
    return;
   }
+  // 1) Haqiqiy do'kon — yaqin eshik
+  const shop=nearestShop();
+  if(shop&&shop.dist<shop.r){
+   openShopFiltered(shop.kind,shop.title);
+   return;
+  }
+  // 2) Mashina
   let nearest=null,dist=999;
   vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
-  if(nearest&&dist<4.8){
+  if(nearest&&dist<5.2){
    activeCar=nearest;me.avatar.visible=false;me.pos.set(nearest.position.x,0,nearest.position.z);
    toast('Mashina: W/S gaz-tormoz, A/D rul, SPACE tormoz, E tushish');
    return;
   }
-  // Kon
+  // 3) Kon
   if(mineMarker){
    const md=Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z);
-   if(md<mineMarker.r+2){
+   if(md<mineMarker.r+3){
     lifeAction('mine');
     return;
    }
   }
+  // 4) Uy eshigi — keng radius
   const b=nearestBuilding();
-  if(b&&b.dist<8){
+  if(b&&b.dist<11){
    homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};
    insideHome=true;elevatorFloor=1;
-   const quality=Math.random();
+   const quality=b.quality!=null?b.quality:(Math.random()>0.45?1:0);
    buildApartment(quality);
    me.pos.set(0,-40,0);me.avatar.visible=false;
-   toast(quality>0.5?'Yaxshi xonadon. E — lift, F — chiqish, H — uxash':'Oddiy xonadon. E — lift, F — chiqish, H — uxash');
+   toast(quality?'Yaxshi xonadon. E — lift, F — chiqish, H — uxash':'Oddiy xonadon. E — lift, F — chiqish, H — uxash');
   }
  }
 
@@ -1812,11 +1891,13 @@ function updateMe(dt){
  if(me.pos.y<=0){me.pos.y=0;me.vy=0;me.grounded=true;}
 
  let hintText='';
+ const shopN=nearestShop();
  let carNear=999;vehicles.forEach(v=>{carNear=Math.min(carNear,Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z));});
  const homeNear=nearestBuilding();
- if(carNear<4.8)hintText='E — avtomobilga o‘tirish';
- else if(homeNear&&homeNear.dist<8)hintText='E — binoga kirish (50 qavat)';
- else if(mineMarker&&Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z)<mineMarker.r+3)hintText='E — KON QAZISH (zombilar xavfli!)  |  F — hujum';
+ if(shopN&&shopN.dist<shopN.r)hintText='E — '+shopN.title+' ga kirish';
+ else if(carNear<5.2)hintText='E — avtomobilga o‘tirish';
+ else if(homeNear&&homeNear.dist<11)hintText='E — uyga kirish (50 qavat, lift)';
+ else if(mineMarker&&Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z)<mineMarker.r+3)hintText='E — KON QAZISH (zombilar!)  |  F — hujum';
  else if(me.weapon)hintText='F — hujum ('+me.weapon+')';
  showHint(hintText);
  const av=me.avatar;
@@ -1930,28 +2011,40 @@ window.lifeAction=async function(action,item){
  }catch(e){toast(e.message||'Xato');}
 };
 
-function openShop(){
+let currentShopKind='shop';
+let currentShopTitle='DO\'KON';
+function openShopFiltered(kind,title){
  if(!lifeData){toast('Avval kiring');return;}
+ currentShopKind=kind||'shop';
+ currentShopTitle=title||'DO\'KON';
  const list=$('shopList');list.innerHTML='';
+ const h=document.querySelector('#shopModal h3');if(h)h.textContent=currentShopTitle;
  const shop=lifeData.shop||{};
- const keys=Object.keys(shop);
- keys.forEach(function(k){
+ const allow={
+  shop:function(p){return p.kind==='food'||p.kind==='supply'||p.kind==='furniture'||p.kind==='vehicle';},
+  weapon:function(p){return p.kind==='weapon'||p.kind==='ammo';},
+  blackmarket:function(p){return p.kind==='illegal'||p.kind==='illegal_weapon';}
+ };
+ const filter=allow[currentShopKind]||allow.shop;
+ Object.keys(shop).forEach(function(k){
   const p=shop[k];
+  if(!filter(p))return;
   const row=document.createElement('div');row.className='itemrow';
   const can=lifeData.cash>=p.price;
-  row.innerHTML='<span>'+p.title+' — <b>'+p.price+'</b> so‘m'+(p.hunger?' (+'+p.hunger+' ochlik)':'')+(p.dmg?' (zarar '+p.dmg+')':'')+'</span>';
+  row.innerHTML='<span>'+p.title+' — <b>'+p.price+'</b> so\'m'+(p.hunger?' (+'+p.hunger+' ochlik)':'')+(p.dmg?' (zarar '+p.dmg+')':'')+'</span>';
   const btn=document.createElement('button');btn.textContent='Sotib ol';btn.disabled=!can;
-  btn.onclick=function(){lifeAction('buy',k);openShop();};
+  btn.onclick=function(){lifeAction('buy',k);openShopFiltered(currentShopKind,currentShopTitle);};
   row.appendChild(btn);list.appendChild(row);
  });
  $('shopModal').classList.add('show');
 }
+function openShop(){openShopFiltered('shop','SUPERMARKET');}
 function openInv(){
  if(!lifeData){toast('Avval kiring');return;}
  const list=$('invList');list.innerHTML='';
  const inv=lifeData.inventory||{};
  const keys=Object.keys(inv).filter(k=>inv[k]>0);
- if(!keys.length)list.innerHTML='<div style="color:#889">Bo‘sh</div>';
+ if(!keys.length)list.innerHTML='<div style="color:#889">Bo\'sh</div>';
  keys.forEach(function(k){
   const row=document.createElement('div');row.className='itemrow';
   row.innerHTML='<span>'+(lifeData.shop[k]?lifeData.shop[k].title:k)+' ×'+inv[k]+'</span>';
@@ -1964,7 +2057,8 @@ function openInv(){
  });
  $('invModal').classList.add('show');
 }
-$('shopbtn').onclick=openShop;
+// HUD tugmasi olib tashlandi — do'konlar faqat shaharda (E)
+if($('shopbtn'))$('shopbtn').style.display='none';
 $('invbtn').onclick=openInv;
 $('shopClose').onclick=function(){$('shopModal').classList.remove('show');};
 $('invClose').onclick=function(){$('invModal').classList.remove('show');};
