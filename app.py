@@ -981,6 +981,7 @@ document.addEventListener('visibilitychange',function(){mon.t0=0;mon.low=0;mon.h
 // ======================= SHAHAR =======================
 let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
+let insideShop=false,shopReturn=null,shopGroup=null;
 let zombies=[];
 let mineMarker=null;
 let buildingDoors=[]; // {x,z,quality,label}
@@ -2261,6 +2262,7 @@ function updateEnv(dt){
 // Life UI
 let lifeToken=store('ulrp_token')||'';
 let lifeData=null;
+let gameClock={label:''};
 function updateHpBar(){
  const bar=$('hpbar'),fill=$('hpfill');
  if(me.hp<100){bar.style.display='block';fill.style.width=me.hp+'%';fill.style.background=me.hp<30?'#ff4444':(me.hp<60?'#ffaa33':'linear-gradient(90deg,#32d99a,#7dffb0)');}
