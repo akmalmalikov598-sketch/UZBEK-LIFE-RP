@@ -982,6 +982,7 @@ document.addEventListener('visibilitychange',function(){mon.t0=0;mon.low=0;mon.h
 let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
 let insideShop=false,shopReturn=null,shopGroup=null;
+let elevatorTransition=null,elevatorDoorLeft=null,elevatorDoorRight=null;
 let zombies=[];
 let mineMarker=null;
 let buildingDoors=[]; // {x,z,quality,label}
@@ -1364,13 +1365,29 @@ function buildApartment(quality){
   abox(new THREE.BoxGeometry(3.8,0.42,4.2),wood,6.0,0.3,5.5);
   abox(new THREE.BoxGeometry(3.65,0.28,4.0),cream,6.0,0.64,5.4);
   [-0.9,0.9].forEach(x=>abox(new THREE.BoxGeometry(1.15,0.18,0.72),wall,6.0+x,0.9,6.8));
-  // Lift
-  abox(new THREE.BoxGeometry(3.0,4.8,3.0),dark,7.5,2.2,-0.5);
-  abox(new THREE.BoxGeometry(1.2,3.6,0.12),metal,6.8,1.9,1.05);
-  abox(new THREE.BoxGeometry(1.2,3.6,0.12),metal,8.2,1.9,1.05);
-  abox(new THREE.BoxGeometry(0.3,1.6,0.12),mat(0x25292d,0.4),9.2,1.55,0.1);
-  for(let i=0;i<12;i++)abox(new THREE.BoxGeometry(0.12,0.12,0.08),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c}),9.2,2.15-i*0.16,0.05);
-  const light=new THREE.PointLight(0xffe5bd,1.5,28);light.position.set(0,4.4,0);g.add(light);
+  // Lift: shaft, cabin, sliding doors, control panel and floor display
+  const shaft=abox(new THREE.BoxGeometry(3.15,5.0,3.15),dark,7.5,2.35,-0.5);
+  shaft.material=dark;
+  const cabin=new THREE.Group();cabin.position.set(7.5,0,-0.5);g.add(cabin);
+  const cabinFloor=new THREE.Mesh(new THREE.BoxGeometry(2.65,0.12,2.55),wood);cabinFloor.position.set(0,0.12,0);cabin.add(cabinFloor);
+  const cabinBack=new THREE.Mesh(new THREE.BoxGeometry(2.65,4.35,0.12),metal);cabinBack.position.set(0,2.25,-1.22);cabin.add(cabinBack);
+  const cabinSideL=new THREE.Mesh(new THREE.BoxGeometry(0.12,4.35,2.45),metal);cabinSideL.position.set(-1.3,2.25,0);cabin.add(cabinSideL);
+  const cabinSideR=new THREE.Mesh(new THREE.BoxGeometry(0.12,4.35,2.45),metal);cabinSideR.position.set(1.3,2.25,0);cabin.add(cabinSideR);
+  const cabinRoof=new THREE.Mesh(new THREE.BoxGeometry(2.75,0.12,2.65),dark);cabinRoof.position.set(0,4.45,0);cabin.add(cabinRoof);
+  const doorMat=new THREE.MeshStandardMaterial({color:0xb9c3c8,metalness:0.72,roughness:0.25});
+  elevatorDoorLeft=new THREE.Mesh(new THREE.BoxGeometry(1.3,3.7,0.10),doorMat);elevatorDoorLeft.position.set(-0.65,2.05,1.22);cabin.add(elevatorDoorLeft);
+  elevatorDoorRight=new THREE.Mesh(new THREE.BoxGeometry(1.3,3.7,0.10),doorMat);elevatorDoorRight.position.set(0.65,2.05,1.22);cabin.add(elevatorDoorRight);
+  const panel=abox(new THREE.BoxGeometry(0.34,1.5,0.12),mat(0x202a32,0.35),9.25,1.8,0.45);
+  for(let i=0;i<12;i++){
+   const btn=abox(new THREE.CylinderGeometry(0.055,0.055,0.035,16),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c,emissiveIntensity:0.35}),9.25,2.35-i*0.13,0.53);
+   btn.rotation.x=Math.PI/2;
+  }
+  const displayCanvas=document.createElement('canvas');displayCanvas.width=256;displayCanvas.height=128;
+  const dg=displayCanvas.getContext('2d');dg.fillStyle='#07121b';dg.fillRect(0,0,256,128);dg.fillStyle='#39e6a2';dg.font='bold 76px sans-serif';dg.textAlign='center';dg.fillText(String(elevatorFloor),128,92);
+  const floorDisplay=new THREE.Mesh(new THREE.PlaneGeometry(0.9,0.45),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(displayCanvas)}));
+  floorDisplay.position.set(7.5,4.65,0.95);g.add(floorDisplay);
+  g.userData.lift={cabin,displayCanvas,floorDisplay,displayContext:dg,doorLeft:elevatorDoorLeft,doorRight:elevatorDoorRight};
+  const light=new THREE.PointLight(0xffe5bd,1.8,28);light.position.set(7.5,4.1,-0.5);g.add(light);
   // TV animatsiya
   g.userData.tv=tvScreen;
   g.userData.tvT=0;
@@ -1380,11 +1397,22 @@ function buildApartment(quality){
  function interact(){
   if(insideShop){openShopFiltered(currentShopKind,currentShopTitle);return;}
   if(insideHome){
-   interactFurniture();
-   if(homeGroup){
-    elevatorFloor=elevatorFloor%50+1;
-    homeGroup.position.y=-40+(elevatorFloor-1)*3.2;
-    toast('Lift: '+elevatorFloor+'-qavat / 50');
+   const liftDistance=Math.hypot(me.pos.x-7.5,me.pos.z+0.5);
+   if(liftDistance<3.2){
+    if(elevatorTransition){toast('Lift harakatlanmoqda...');return;}
+    const raw=prompt('Lift qavati (1–50):',String(elevatorFloor));
+    if(raw===null)return;
+    const target=Math.max(1,Math.min(50,Math.floor(Number(raw))));
+    if(!Number.isFinite(target)||target<1){toast('Qavat raqami noto‘g‘ri');return;}
+    if(target===elevatorFloor){toast('Siz '+target+'-qavatdasiz');return;}
+    elevatorTransition={from:elevatorFloor,to:target,elapsed:0,duration:Math.min(7,1.5+Math.abs(target-elevatorFloor)*0.12),startY:homeGroup?homeGroup.position.y:-40};
+    if(homeGroup&&homeGroup.userData.lift){
+     const lift=homeGroup.userData.lift;
+     lift.doorLeft.position.x=-0.05;lift.doorRight.position.x=0.05;
+    }
+    toast('Lift '+target+'-qavatga ko‘tarilmoqda...');
+   }else{
+    interactFurniture();
    }
    return;
   }
@@ -1521,7 +1549,7 @@ function doAttack(){
 
  window.addEventListener('keydown',function(e){
   if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}
-  if(e.code==='KeyF'&&insideHome){insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Chiqdingiz');}if(e.code==='KeyF'&&insideShop){insideShop=false;if(shopGroup){scene.remove(shopGroup);shopGroup=null;}$('shopModal').classList.remove('show');me.pos.set(shopReturn.x,shopReturn.y,shopReturn.z);me.rot=shopReturn.rot;me.avatar.visible=true;toast('Do\'kondan chiqdingiz');}
+  if(e.code==='KeyF'&&insideHome){elevatorTransition=null;insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Chiqdingiz');}if(e.code==='KeyF'&&insideShop){insideShop=false;if(shopGroup){scene.remove(shopGroup);shopGroup=null;}$('shopModal').classList.remove('show');me.pos.set(shopReturn.x,shopReturn.y,shopReturn.z);me.rot=shopReturn.rot;me.avatar.visible=true;toast('Do\'kondan chiqdingiz');}
   if(e.code==='KeyF'&&!insideHome&&!typing()){doAttack();e.preventDefault();}
   if(e.code==='KeyH'&&!typing()){
    if(insideShop){
@@ -1726,6 +1754,35 @@ function interactFurniture(){
  // fridge / kitchen
  if(x>5&&z>-2&&z<1){toast('Muzlatgich ochildi');return;}
  toast('E — mebel (karavot/divan/TV)');
+}
+
+function updateElevator(dt){
+ if(!elevatorTransition||!homeGroup)return;
+ const tr=elevatorTransition, lift=homeGroup.userData.lift;
+ tr.elapsed+=dt;
+ const p=Math.min(1,tr.elapsed/tr.duration);
+ const eased=p*p*(3-2*p);
+ const targetY=-40+(tr.to-1)*3.2;
+ homeGroup.position.y=tr.startY+(targetY-tr.startY)*eased;
+ me.pos.y=homeGroup.position.y+0.2;
+ if(lift&&lift.displayContext){
+  const dg=lift.displayContext;dg.fillStyle='#07121b';dg.fillRect(0,0,256,128);
+  dg.fillStyle='#39e6a2';dg.font='bold 76px sans-serif';dg.textAlign='center';
+  const shown=Math.round(tr.from+(tr.to-tr.from)*eased);dg.fillText(String(shown),128,92);
+  lift.floorDisplay.material.map.needsUpdate=true;
+ }
+ if(p>=1){
+  elevatorFloor=tr.to;
+  me.pos.y=targetY+0.2;
+  if(lift){
+   lift.displayContext.fillStyle='#07121b';lift.displayContext.fillRect(0,0,256,128);
+   lift.displayContext.fillStyle='#39e6a2';lift.displayContext.font='bold 76px sans-serif';lift.displayContext.textAlign='center';lift.displayContext.fillText(String(elevatorFloor),128,92);
+   lift.floorDisplay.material.map.needsUpdate=true;
+   lift.doorLeft.position.x=-0.65;lift.doorRight.position.x=0.65;
+  }
+  elevatorTransition=null;
+  toast(elevatorFloor+'-qavatga yetib keldingiz. Lift eshigi ochildi.');
+ }
 }
 
 function updateCityPopulation(dt,t){
@@ -2392,6 +2449,7 @@ function frame(now){
   updateOthers(dt);
   updateCityPopulation(dt,now);
   updateZombies(dt,now);
+  updateElevator(dt);
   updateCamera(dt,now);
   updateEnv(dt);
   if(me.avatar)maybeSend(now);
