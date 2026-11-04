@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-UZBEK LIFE RP  v5.0  —  Full immersive rebuild
-Haqiqiy shahar: fizik do'konlar, detallangan odamlar, mashinalar, uylar, kon.
+UZBEK LIFE RP  v5.1  —  Phase 1b/2: package DB + apartment ownership
 """
 
 import asyncio
@@ -11,6 +10,7 @@ import math
 import os
 import random
 import re
+import sys
 import time
 import uuid
 import sqlite3
@@ -21,13 +21,28 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+# Phase 1b: server package
+_PKG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uzbek_life_rp")
+if _PKG not in sys.path:
+    sys.path.insert(0, _PKG)
+try:
+    from server import database as life_db
+    from server.shop_catalog import SHOP as LIFE_SHOP
+    from server.config import VERSION as PKG_VERSION
+    LIFE_DB_OK = True
+except Exception as _e:
+    print("life_db import failed:", _e)
+    LIFE_DB_OK = False
+    LIFE_SHOP = {}
+    PKG_VERSION = "5.0.0"
+
 
 # =========================
 # SOZLAMALAR
 # =========================
 
 GAME_NAME = "UZBEK LIFE RP"
-VERSION = "5.0.0"
+VERSION = "5.1.0" if not LIFE_DB_OK else str(PKG_VERSION)
 
 MAX_PLAYERS = 48
 WORLD_LIMIT = 220.0
@@ -462,6 +477,14 @@ def init_game_db():
 
 
 init_game_db()
+if LIFE_DB_OK:
+    try:
+        life_db.init_db()
+        life_db.seed_world_content()
+        life_db.seed_vehicles_from_world(world.cars)
+        print("life_db: schema + world + vehicles seed OK")
+    except Exception as e:
+        print("life_db init error:", e)
 
 
 def account_state(row):
@@ -1230,7 +1253,7 @@ function buildWorld(){
    wheels.push(w);
   }));
   const steering=new THREE.Mesh(new THREE.TorusGeometry(0.15,0.028,8,16),alloyMat);steering.position.set(-0.38,1.15,0.38);steering.rotation.y=Math.PI/2;root.add(steering);
-  root.userData={id:i,baseX:c[0],baseZ:c[1],speed:0,steer:0,steering,wheels,paint,sport:isSport};
+  root.userData={id:i,serverId:'VEH_'+String(i).padStart(4,'0'),baseX:c[0],baseZ:c[1],speed:0,steer:0,steering,wheels,paint,sport:isSport,driver:null};
   vehicles.push(root);
   if(c[2]==='x')colliders.push([c[0],c[1],2.35,1.05,1.5]);else colliders.push([c[0],c[1],1.05,2.35,1.5]);
  });
@@ -1269,7 +1292,21 @@ function buildWorld(){
  // Interaktiv hint
  const hint=document.createElement('div');hint.id='interactHint';hint.style.cssText='position:fixed;left:50%;bottom:95px;transform:translateX(-50%);z-index:30;padding:11px 17px;border:1px solid #ffffff35;border-radius:12px;background:#101a22e8;color:white;font:700 13px system-ui;display:none;text-align:center;pointer-events:none;white-space:pre-line';document.body.appendChild(hint);
 
- function buildApartment(quality){
+ function animateDoorEnter(doorX,doorZ,done){
+  // eshik ochilish: oddiy pivot panel (vaqtinchalik mesh)
+  const door=new THREE.Mesh(new THREE.BoxGeometry(1.2,2.4,0.12),new THREE.MeshStandardMaterial({color:0x4a3728,roughness:0.7}));
+  door.position.set(doorX,1.2,doorZ);
+  scene.add(door);
+  let t=0;
+  const step=()=>{
+    t+=0.04;
+    door.rotation.y=-Math.min(t,1.2);
+    if(t<1.2)requestAnimationFrame(step);
+    else{scene.remove(door);if(done)done();}
+  };
+  step();
+}
+function buildApartment(quality){
   if(homeGroup){scene.remove(homeGroup);homeGroup=null;}
   const g=new THREE.Group();g.position.set(0,-40,0);scene.add(g);homeGroup=g;
   const floorC=quality>0.5?0x9b8871:0x6a5a4a;
@@ -1321,7 +1358,9 @@ function buildWorld(){
  }
 
  function interact(){
+  if(insideShop){openShopFiltered(currentShopKind,currentShopTitle);return;}
   if(insideHome){
+   interactFurniture();
    if(homeGroup){
     elevatorFloor=elevatorFloor%50+1;
     homeGroup.position.y=-40+(elevatorFloor-1)*3.2;
@@ -1339,15 +1378,24 @@ function buildWorld(){
   // 1) Haqiqiy do'kon — yaqin eshik
   const shop=nearestShop();
   if(shop&&shop.dist<shop.r){
-   openShopFiltered(shop.kind,shop.title);
+   // haqiqiy do'kon interyeri
+   if(shop.kind==='shop'||shop.kind==='weapon'||shop.kind==='blackmarket'){
+    shopReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};
+    insideShop=true;
+    buildShopInterior(shop.kind,shop.title);
+    me.pos.set(0,-80,3);me.avatar.visible=false;
+    openShopFiltered(shop.kind,shop.title);
+    toast(shop.title+' — mahsulot oling, F chiqish');
+   } else {
+    openShopFiltered(shop.kind,shop.title);
+   }
    return;
   }
   // 2) Mashina
   let nearest=null,dist=999;
   vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
   if(nearest&&dist<5.2){
-   activeCar=nearest;me.avatar.visible=false;me.pos.set(nearest.position.x,0,nearest.position.z);
-   toast('Mashina: W/S gaz-tormoz, A/D rul, SPACE tormoz, E tushish');
+   tryEnterVehicle(nearest);
    return;
   }
   // 3) Kon
@@ -1358,19 +1406,71 @@ function buildWorld(){
     return;
    }
   }
-  // 4) Uy eshigi — keng radius
+  // 4) Uy eshigi — server tekshiruvi (Phase 2)
   const b=nearestBuilding();
   if(b&&b.dist<11){
-   homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};
-   insideHome=true;elevatorFloor=1;
-   const quality=b.quality!=null?b.quality:(Math.random()>0.45?1:0);
-   buildApartment(quality);
-   me.pos.set(0,-40,0);me.avatar.visible=false;
-   toast(quality?'Yaxshi xonadon. E — lift, F — chiqish, H — uxash':'Oddiy xonadon. E — lift, F — chiqish, H — uxash');
+   enterBuildingFlow(b);
   }
  }
+ async function enterBuildingFlow(b){
+  homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};
+  let quality=b.quality!=null?b.quality:1;
+  let aptId=null,floor=1;
+  try{
+   if(lifeToken){
+    const buildings=await (await fetch('/api/buildings')).json();
+    // eng yaqin server binosi
+    let best=null,bd=1e9;
+    (buildings||[]).forEach(bl=>{const d=Math.hypot(bl.x-me.pos.x,bl.z-me.pos.z);if(d<bd){bd=d;best=bl;}});
+    if(best&&bd<40){
+     const apts=await (await fetch('/api/apartments?building_id='+encodeURIComponent(best.id))).json();
+     // bo'sh yoki o'zingizniki
+     let pick=(apts||[]).find(a=>!a.owner_id)||(apts||[])[0];
+     const mine=await lifeRequest('/api/my_apartments');
+     if(mine&&mine.length){const m=mine.find(a=>a.building_id===best.id);if(m)pick=m;}
+     if(pick){
+      const ent=await lifeRequest('/api/apartment/enter',{apartment_id:pick.id});
+      if(ent&&ent.allowed){aptId=pick.id;quality=pick.quality||quality;floor=pick.floor||1;toast((ent.owned_by_you?'Sizning ':'')+pick.id+' · qavat '+floor);}
+      else{toast((ent&&ent.reason)||'Kirish mumkin emas');return;}
+     }
+    }
+   }
+  }catch(e){/* offline/fallback */}
+  const dx=b.doorX!=null?b.doorX:me.pos.x, dz=b.doorZ!=null?b.doorZ:me.pos.z;
+  animateDoorEnter(dx,dz,()=>{
+    insideHome=true;elevatorFloor=floor;
+    buildApartment(quality>1?1:quality);
+    me.pos.set(0,-40+(elevatorFloor-1)*3.2,0);me.avatar.visible=false;
+    if(!aptId)toast(quality?'Yaxshi xonadon. E lift · F chiqish · H uxash':'Oddiy xonadon. E lift · F chiqish');
+  });
+ }
 
- function doAttack(){
+ async function buyNearestVehicle(){
+ if(!lifeToken){toast('Avval kiring');return;}
+ let nearest=null,dist=999;
+ vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
+ if(!nearest||dist>6){toast('Yaqin mashina yo\'q');return;}
+ const vid=nearest.userData.serverId||('VEH_'+String(nearest.userData.id).padStart(4,'0'));
+ try{
+  const r=await lifeRequest('/api/vehicle/buy',{vehicle_id:vid});
+  lifeData=r;drawLife();toast(r.message||('Sotib olindi '+vid));
+ }catch(e){toast(e.message||'Xato');}
+}
+async function tryEnterVehicle(car){
+  const vid=car.userData.serverId||('VEH_'+String(car.userData.id).padStart(4,'0'));
+  try{
+    if(lifeToken){
+      const r=await lifeRequest('/api/vehicle/drive',{vehicle_id:vid});
+      if(r&&r.allowed===false){toast(r.reason||'Mashina band');return;}
+      if(r&&r.owned_by_you)toast('Sizning mashinangiz');
+    }
+  }catch(e){/* public fallback */}
+  activeCar=car;me.avatar.visible=false;
+  me.pos.set(car.position.x,0,car.position.z);
+  car.userData.driver=myId;
+  toast('W/S gaz · A/D rul · SPACE tormoz · E tushish · B sotib olish');
+}
+function doAttack(){
   if(me.attackCd>0||insideHome)return;
   me.attackCd=0.45;
   const dmg=me.weapon&&WEAPON_DMG[me.weapon]?WEAPON_DMG[me.weapon]:8;
@@ -1401,15 +1501,23 @@ function buildWorld(){
 
  window.addEventListener('keydown',function(e){
   if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}
-  if(e.code==='KeyF'&&insideHome){
-   insideHome=false;
-   if(homeGroup){scene.remove(homeGroup);homeGroup=null;}
+  if(e.code==='KeyF'&&insideHome){insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Chiqdingiz');}if(e.code==='KeyF'&&insideShop){insideShop=false;if(shopGroup){scene.remove(shopGroup);shopGroup=null;}$('shopModal').classList.remove('show');me.pos.set(shopReturn.x,shopReturn.y,shopReturn.z);me.rot=shopReturn.rot;me.avatar.visible=true;toast('Do\'kondan chiqdingiz');}
    me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;
    toast('Binodan chiqdingiz');
   }
   if(e.code==='KeyF'&&!insideHome&&!typing()){doAttack();e.preventDefault();}
   if(e.code==='KeyH'&&!typing()){
-   if(insideHome){lifeAction('sleep');toast('Uxlab dam oldingiz');}
+   if(insideShop){
+  let ix=(keys.KeyD?1:0)-(keys.KeyA?1:0),iy=(keys.KeyW?1:0)-(keys.KeyS?1:0);
+  const l=Math.hypot(ix,iy)||1;
+  me.pos.x=clamp(me.pos.x+ix/l*4*dt,-7,7);
+  me.pos.z=clamp(me.pos.z-iy/l*4*dt,-6,6);
+  me.pos.y=-80;
+  camera.position.set(me.pos.x+6,me.pos.y+6,me.pos.z+8);
+  camera.lookAt(me.pos.x,me.pos.y+1,me.pos.z);
+  me.speed=0;showHint('F — do\'kondan chiqish');return;
+ }
+ if(insideHome){lifeAction('sleep');toast('Uxlab dam oldingiz');}
    else toast('Uyqu uchun xonadonga kiring (E)');
   }
  });
@@ -1513,6 +1621,94 @@ function buildCityPopulation(){
   const a=rng()*TAU,speed=(wealth==='boy'?0.5:0.7)+rng()*0.7;
   cityNPCs.push({group:g,legs,arms,tx:x+Math.cos(a)*10,tz:z+Math.sin(a)*10,speed,phase:rng()*TAU,wait:rng()*5,wealth,hp:100,aggro:0});
  }
+}
+
+
+function buildPolice(){
+ policeUnits=[];
+ const spots=[[-25,95],[0,0],[80,80],[-80,-80],[120,0]];
+ spots.forEach((s,i)=>{
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.26,0.5,4,10),mat(0x1a3a6e,0.7));
+  body.position.y=1.12;g.add(body);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.2,12,10),mat(0xd4a574,0.7));
+  head.position.y=1.8;g.add(head);
+  const hat=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.12,12),mat(0x0a1a3a,0.6));
+  hat.position.y=2.0;g.add(hat);
+  g.position.set(s[0],0,s[1]);
+  g.traverse(o=>{if(o.isMesh)o.castShadow=true;});
+  scene.add(g);
+  policeUnits.push({group:g,hp:100,speed:6.5,state:'patrol',phase:Math.random()*6,tx:s[0],tz:s[1],arrestCd:0});
+ });
+}
+function updatePolice(dt){
+ if(!lifeData)return;
+ const wanted=lifeData.wanted||0;
+ for(const p of policeUnits){
+  const g=p.group;
+  if(wanted>0 && !insideHome && !insideShop){
+   p.state='chase';
+   const dx=me.pos.x-g.position.x,dz=me.pos.z-g.position.z,d=Math.hypot(dx,dz)||1;
+   g.position.x+=dx/d*p.speed*dt;g.position.z+=dz/d*p.speed*dt;
+   g.rotation.y=Math.atan2(dx,dz);
+   if(d<2.2){
+    p.arrestCd-=dt;
+    if(p.arrestCd<=0){
+     p.arrestCd=3;
+     lifeAction('wanted');
+     toast('POLITSIYA: ushladingiz! Qamoq...');
+     // jail teleport near police station
+     me.pos.set(-25,0,100);
+     me.hp=Math.max(20,me.hp-10);
+     updateHpBar();
+    }
+   }
+  }else{
+   p.state='patrol';
+   let dx=p.tx-g.position.x,dz=p.tz-g.position.z,d=Math.hypot(dx,dz);
+   if(d<1.5){const a=Math.random()*Math.PI*2;p.tx=g.position.x+Math.cos(a)*20;p.tz=g.position.z+Math.sin(a)*20;}
+   else{g.position.x+=dx/d*2.2*dt;g.position.z+=dz/d*2.2*dt;g.rotation.y=Math.atan2(dx,dz);}
+  }
+ }
+}
+function buildShopInterior(kind,title){
+ if(shopGroup){scene.remove(shopGroup);shopGroup=null;}
+ const g=new THREE.Group();g.position.set(0,-80,0);scene.add(g);shopGroup=g;
+ const floor=mat(0x8a8070,0.85),wall=mat(0xe8e0d0,0.9),shelf=mat(0x6a5a4a,0.7);
+ function ab(geo,m,x,y,z){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.castShadow=true;g.add(o);return o;}
+ ab(new THREE.BoxGeometry(16,0.2,14),floor,0,-0.1,0);
+ ab(new THREE.BoxGeometry(16,4,0.2),wall,0,2,-7);
+ ab(new THREE.BoxGeometry(0.2,4,14),wall,-8,2,0);ab(new THREE.BoxGeometry(0.2,4,14),wall,8,2,0);
+ // shelves
+ for(let i=0;i<4;i++){
+  ab(new THREE.BoxGeometry(3,2.2,0.6),shelf,-5+i*3.2,1.2,-5.5);
+  ab(new THREE.BoxGeometry(2.8,0.08,0.5),mat(0xc0b090,0.5),-5+i*3.2,1.5,-5.5);
+  ab(new THREE.BoxGeometry(2.8,0.08,0.5),mat(0xc0b090,0.5),-5+i*3.2,0.9,-5.5);
+ }
+ // counter
+ ab(new THREE.BoxGeometry(4,1.1,1.2),mat(0x3a4a5a,0.5),0,0.55,4);
+ const light=new THREE.PointLight(0xfff5e0,1.2,22);light.position.set(0,3.5,0);g.add(light);
+ // sign sprite
+ const c=document.createElement('canvas');c.width=512;c.height=64;const cg=c.getContext('2d');
+ cg.fillStyle='#0a1018';cg.fillRect(0,0,512,64);cg.fillStyle='#2ee59d';cg.font='bold 32px system-ui';cg.textAlign='center';
+ cg.fillText(title||'DOKON',256,40);
+ const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));
+ sp.scale.set(6,0.8,1);sp.position.set(0,3.5,0);g.add(sp);
+ return g;
+}
+function interactFurniture(){
+ if(!insideHome)return;
+ // nearest furniture by zone
+ const x=me.pos.x,z=me.pos.z;
+ // bed zone
+ if(x>4&&z>3.5){lifeAction('sleep');toast('Karavotda uxladiz');return;}
+ // sofa
+ if(x<-2&&z>0&&z<4){toast('Divanda o\'tirdiz');return;}
+ // TV
+ if(x>4&&z<-3){toast('TV yoqildi');if(homeGroup&&homeGroup.userData.tv)homeGroup.userData.tvT=0;return;}
+ // fridge / kitchen
+ if(x>5&&z>-2&&z<1){toast('Muzlatgich ochildi');return;}
+ toast('E — mebel (karavot/divan/TV)');
 }
 
 function updateCityPopulation(dt,t){
@@ -1800,6 +1996,13 @@ function onWelcome(m){
  retry=0;online=true;setStatus(true);setNet('Serverga ulandi','ok');
  clearTimeout(connTimer);startPing();
 }
+function onVehicleNet(m){
+ if(!m||!m.id||m.pid===myId)return;
+ const car=vehicles.find(v=>(v.userData.serverId||('VEH_'+String(v.userData.id).padStart(4,'0')))===m.id);
+ if(!car||car===activeCar)return;
+ car.position.x=m.x;car.position.z=m.z;car.rotation.y=m.rot;
+ car.userData.driver=m.pid;
+}
 function onState(list){
  for(let i=0;i<list.length;i++){
   const p=list[i],id=p[0];
@@ -1815,7 +2018,7 @@ function onMessage(ev){
   case 'welcome':onWelcome(m);break;
   case 'join':addRemote(m);renderRoster();break;
   case 'leave':removeRemote(m.id);renderRoster();break;
-  case 'state':onState(m.p);break;
+  case 'state':onState(m.p);break;case 'vehicle':onVehicleNet(m);break;
   case 'correct':me.pos.set(m.x,m.y||0,m.z);me.vy=0;break;
   case 'pong':pingMs=Math.round(performance.now()-m.t);break;
   case 'error':setNet(m.message||'Server xatosi','err');retry=Math.max(retry,3);break;
@@ -1864,8 +2067,13 @@ window.addEventListener('online',tryReconnectNow);
 
 let lastSendT=0,ls={x:1e9,y:0,z:0,r:0};
 function maybeSend(now){
- if(insideHome||activeCar)return;
+ if(insideHome)return;
  if(!online||!socket||socket.readyState!==1||now-lastSendT<66)return;
+ if(activeCar){
+  const c=activeCar;const vid=c.userData.serverId||('VEH_'+String(c.userData.id).padStart(4,'0'));
+  socket.send(JSON.stringify({type:'vehicle',id:vid,x:+c.position.x.toFixed(3),z:+c.position.z.toFixed(3),rot:+c.rotation.y.toFixed(3)}));
+  lastSendT=now;return;
+ }
  const p=me.pos;
  if(Math.abs(p.x-ls.x)<0.005&&Math.abs(p.z-ls.z)<0.005&&Math.abs(p.y-ls.y)<0.005&&Math.abs(me.rot-ls.r)<0.01)return;
  socket.send(JSON.stringify({type:'move',x:+p.x.toFixed(3),y:+p.y.toFixed(3),z:+p.z.toFixed(3),rot:+me.rot.toFixed(3)}));
@@ -1875,6 +2083,16 @@ function maybeSend(now){
 // Harakat
 function updateMe(dt){
  if(me.attackCd>0)me.attackCd-=dt;
+ if(insideShop){
+  let ix=(keys.KeyD?1:0)-(keys.KeyA?1:0),iy=(keys.KeyW?1:0)-(keys.KeyS?1:0);
+  const l=Math.hypot(ix,iy)||1;
+  me.pos.x=clamp(me.pos.x+ix/l*4*dt,-7,7);
+  me.pos.z=clamp(me.pos.z-iy/l*4*dt,-6,6);
+  me.pos.y=-80;
+  camera.position.set(me.pos.x+6,me.pos.y+6,me.pos.z+8);
+  camera.lookAt(me.pos.x,me.pos.y+1,me.pos.z);
+  me.speed=0;showHint('F — do\'kondan chiqish');return;
+ }
  if(insideHome){
   let ix=(keys.KeyD?1:0)-(keys.KeyA?1:0),iy=(keys.KeyW?1:0)-(keys.KeyS?1:0);
   const l=Math.hypot(ix,iy)||1;
@@ -1970,6 +2188,7 @@ function updateOthers(dt){
 }
 const tmpDir={x:0,y:0,z:0};
 function updateCamera(dt,t){
+ if(insideShop){camera.position.set(me.pos.x+6,me.pos.y+6,me.pos.z+8);camera.lookAt(me.pos.x,me.pos.y+1,me.pos.z);return;}
  if(insideHome){camera.position.set(me.pos.x+9,me.pos.y+7.5,me.pos.z+11);camera.lookAt(me.pos.x,me.pos.y+1.2,me.pos.z);return;}
  if(!me.avatar){
   const a=t*0.00007;
@@ -2032,17 +2251,16 @@ function updateHpBar(){
  else bar.style.display='none';
 }
 function drawLife(){
- if(!lifeData){$('lifeStats').textContent='Hisob yo‘q';return;}
- const h=lifeData.hunger,c=lifeData.cash,w=lifeData.wanted,j=lifeData.jailed_until;
+ if(!lifeData){$('lifeStats').textContent='Hisob yo\'q';return;}
+ const h=lifeData.hunger|0, th=lifeData.thirst!=null?lifeData.thirst:100, st=lifeData.stamina!=null?lifeData.stamina:100;
+ const c=lifeData.cash, w=lifeData.wanted|0, j=lifeData.jailed_until|0;
  me.weapon=lifeData.weapon||null;
- let html='<b>'+c+'</b> so‘m<br>';
- html+='Ochlik: <span class="'+(h<30?'bad':'')+'">'+h+'%</span><br>';
- html+='HP: '+me.hp+'%<br>';
- if(me.weapon)html+='Qurol: '+me.weapon+'<br>';
- if(w>0)html+='<span class="bad">Qidiruv: '+w+'/5</span><br>';
- if(j>0)html+='<span class="bad">Qamoq: '+j+'s</span><br>';
- $('lifeStats').innerHTML=html;
- updateHpBar();
+ if(lifeData.hp!=null)me.hp=lifeData.hp;
+ let html='<b>'+c+'</b> so\'m · '+(gameClock.label||'')+'<br>Ochlik: <span class="'+(h<30?'bad':'')+'">'+h+'%</span> · Chanqoq: <span class="'+(th<30?'bad':'')+'">'+th+'%</span><br>HP: '+me.hp+'% · Chidam: '+st+'%';
+ if(me.weapon)html+='<br>Qurol: '+me.weapon;
+ if(w>0)html+='<br><span class="bad">★ Qidiruv '+w+'/5 — POLITSIYA!</span>';
+ if(j>0)html+='<br><span class="bad">Qamoq '+j+'s</span>';
+ $('lifeStats').innerHTML=html;updateHpBar();
 }
 async function lifeRequest(path,body){
  const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','Authorization':'Bearer '+lifeToken},body:body?JSON.stringify(body):undefined});
@@ -2147,7 +2365,7 @@ window.addEventListener('keydown',function(e){
 });
 
 // O'yin tsikli
-let lastT=0,frameErr=false,hungerTick=0;
+let lastT=0,frameErr=false,hungerTick=0,needsTick=0,timeTick=0;
 function frame(now){
  requestAnimationFrame(frame);
  try{
@@ -2254,10 +2472,34 @@ async def health():
     })
 
 
+def _auth_token(request: Request) -> str:
+    token = request.headers.get("Authorization", "").replace("Bearer ", "", 1).strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Hisob sessiyasi topilmadi")
+    if LIFE_DB_OK:
+        if not life_db.get_user_by_token(token):
+            raise HTTPException(status_code=401, detail="Sessiya yaroqsiz")
+        return token
+    # legacy fallback
+    con = db_conn()
+    row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
+    con.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="Sessiya yaroqsiz")
+    return token
+
+
 @app.post("/api/session")
 async def api_session(payload: dict):
     name = clean_name(payload.get("name", "Player"))
     token = secrets.token_urlsafe(32)
+    if LIFE_DB_OK:
+        try:
+            state = life_db.create_or_login_session(name, token)
+            return {"token": token, "state": state}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    # legacy accounts table
     con = db_conn()
     try:
         old = con.execute(
@@ -2268,7 +2510,7 @@ async def api_session(payload: dict):
             con.execute("UPDATE accounts SET token=? WHERE token=?", (token, old["token"]))
         else:
             con.execute(
-                "INSERT INTO accounts(token,name,cash,hunger,inventory,wanted,jailed_until,mine_at,hp,weapon,created_at) VALUES(?,?,150,100,'{}',0,0,0,100,NULL,?)",
+                "INSERT INTO accounts(token,name,cash,hunger,inventory,wanted,jailed_until,mine_at,hp,weapon,created_at) VALUES(?,?,200,100,'{}',0,0,0,100,NULL,?)",
                 (token, name, int(time.time())),
             )
         con.commit()
@@ -2278,21 +2520,12 @@ async def api_session(payload: dict):
         con.close()
 
 
-def auth_account(request):
-    token = request.headers.get("Authorization", "").replace("Bearer ", "", 1).strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Hisob sessiyasi topilmadi")
-    con = db_conn()
-    row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
-    con.close()
-    if not row:
-        raise HTTPException(status_code=401, detail="Sessiya yaroqsiz")
-    return token, row
-
-
 @app.get("/api/state")
 async def api_state(request: Request):
-    token, row = auth_account(request)
+    token = _auth_token(request)
+    if LIFE_DB_OK:
+        row = life_db.get_user_by_token(token)
+        return life_db.account_state_from_user(row)
     con = db_conn()
     try:
         row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
@@ -2301,11 +2534,150 @@ async def api_state(request: Request):
         con.close()
 
 
+# ---- Phase 2 apartment APIs ----
+@app.get("/api/buildings")
+async def api_buildings():
+    if not LIFE_DB_OK:
+        return []
+    return life_db.list_buildings()
+
+
+@app.get("/api/apartments")
+async def api_apartments(building_id: str = None):
+    if not LIFE_DB_OK:
+        return []
+    return life_db.list_apartments(building_id)
+
+
+@app.get("/api/my_apartments")
+async def api_my_apartments(request: Request):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        return []
+    try:
+        return life_db.my_apartments(token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/apartment/buy")
+async def api_apartment_buy(request: Request, payload: dict):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        raise HTTPException(status_code=503, detail="DB paket ulanmagan")
+    apt_id = str(payload.get("apartment_id", ""))[:48]
+    try:
+        return life_db.buy_apartment(token, apt_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/apartment/enter")
+async def api_apartment_enter(request: Request, payload: dict):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        raise HTTPException(status_code=503, detail="DB paket ulanmagan")
+    apt_id = str(payload.get("apartment_id", ""))[:48]
+    try:
+        return life_db.can_enter_apartment(token, apt_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+
+
+@app.get("/api/time")
+async def api_time():
+    if not LIFE_DB_OK:
+        return {"hour": 12, "minute": 0, "label": "12:00"}
+    return life_db.advance_world_time()
+
+
+@app.post("/api/needs_tick")
+async def api_needs_tick(request: Request):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        raise HTTPException(status_code=503, detail="DB yo'q")
+    try:
+        return life_db.tick_player_needs(token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/api/vehicles")
+async def api_vehicles():
+    if not LIFE_DB_OK:
+        return []
+    return life_db.list_vehicles()
+
+
+@app.get("/api/my_vehicles")
+async def api_my_vehicles(request: Request):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        return []
+    try:
+        return life_db.my_vehicles(token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/vehicle/buy")
+async def api_vehicle_buy(request: Request, payload: dict):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        raise HTTPException(status_code=503, detail="DB paket ulanmagan")
+    vid = str(payload.get("vehicle_id", ""))[:32]
+    try:
+        return life_db.buy_vehicle(token, vid)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/vehicle/drive")
+async def api_vehicle_drive(request: Request, payload: dict):
+    token = _auth_token(request)
+    if not LIFE_DB_OK:
+        raise HTTPException(status_code=503, detail="DB paket ulanmagan")
+    vid = str(payload.get("vehicle_id", ""))[:32]
+    try:
+        return life_db.can_drive_vehicle(token, vid)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
 @app.post("/api/action")
 async def api_action(request: Request, payload: dict):
-    token, row = auth_account(request)
+    token = _auth_token(request)
     action = str(payload.get("action", ""))[:24]
     item = str(payload.get("item", ""))[:32]
+    if LIFE_DB_OK:
+        try:
+            return life_db.apply_action(token, action, item)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            # cooldown / funds
+            msg = str(e)
+            code = 429 if "soniya" in msg else 400
+            raise HTTPException(status_code=code, detail=msg)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    # ---- legacy path (package unavailable) ----
     con = db_conn()
     try:
         con.execute("BEGIN IMMEDIATE")
@@ -2319,99 +2691,45 @@ async def api_action(request: Request, payload: dict):
         inv = json.loads(row["inventory"] or "{}")
         now = int(time.time())
         message = ""
-
         if jailed > now and action not in ("wanted",):
-            raise HTTPException(status_code=403, detail="Siz qamoqdasiz. Muddat tugashini kuting.")
-
+            raise HTTPException(status_code=403, detail="Qamoqdasiz")
         if action == "mine":
             last = float(row["mine_at"])
             if time.time() - last < 18:
-                raise HTTPException(status_code=429, detail="Kon qayta ishlashi uchun 18 soniya kuting.")
+                raise HTTPException(status_code=429, detail="18 soniya kuting")
             reward = random.randint(40, 120)
             cash += reward
-            message = f"Kon qazib {reward} so‘m topdingiz. Zombilardan ehtiyot bo‘ling!"
+            message = f"Kon +{reward}"
             con.execute("UPDATE accounts SET mine_at=? WHERE token=?", (time.time(), token))
-
         elif action == "buy":
             product = SHOP.get(item)
             if not product:
-                raise HTTPException(status_code=404, detail="Mahsulot topilmadi")
+                raise HTTPException(status_code=404, detail="Topilmadi")
             if cash < product["price"]:
-                raise HTTPException(status_code=400, detail="Pul yetarli emas. Kon qazib pul toping.")
+                raise HTTPException(status_code=400, detail="Pul yetarli emas")
             cash -= product["price"]
             inv[item] = int(inv.get(item, 0)) + 1
             if product["kind"] in ("illegal", "illegal_weapon"):
                 wanted = min(5, wanted + 1)
             if product["kind"] in ("weapon", "illegal_weapon"):
                 weapon = item
-            message = product["title"] + " sotib olindi."
-
+            message = product["title"] + " olindi"
         elif action == "eat":
-            food = item if item in inv and inv.get(item, 0) > 0 else None
+            food = next((k for k in ("osh", "lavash", "non", "suv") if inv.get(k, 0) > 0), None)
             if not food:
-                food = next((k for k in ("pitsa", "osh", "lavash", "shashlik", "manti", "lagmon", "somsa", "non", "suv", "choy", "kola", "pirojnoe") if inv.get(k, 0) > 0), None)
-            if not food or inv.get(food, 0) <= 0:
-                raise HTTPException(status_code=400, detail="Ovqat yo‘q. Do‘kondan sotib oling.")
+                raise HTTPException(status_code=400, detail="Ovqat yo'q")
             inv[food] -= 1
-            if inv[food] <= 0:
-                inv.pop(food, None)
-            add_h = SHOP.get(food, {}).get("hunger", 15)
-            hunger = min(100, hunger + add_h)
-            message = "Ovqatlandingiz (+" + str(add_h) + " ochlik)."
-
-        elif action == "use":
-            product = SHOP.get(item)
-            if not product or inv.get(item, 0) <= 0:
-                raise HTTPException(status_code=400, detail="Mahsulot yo‘q")
-            inv[item] -= 1
-            if inv[item] <= 0:
-                inv.pop(item, None)
-            if product.get("heal"):
-                hp = min(100, hp + product["heal"])
-                message = "Davolandingiz. +" + str(product["heal"]) + " HP"
-            else:
-                message = "Ishlatildi."
-
+            hunger = min(100, hunger + SHOP.get(food, {}).get("hunger", 15))
+            message = "Yedingiz"
         elif action == "sleep":
             hunger = max(0, hunger - 8)
             hp = min(100, hp + 15)
-            message = "Dam oldingiz. HP tiklandi, ochlik biroz oshdi."
-
-        elif action == "wanted":
-            if wanted > 0:
-                jailed = now + max(120, wanted * 400)
-                wanted = 0
-                message = "Politsiya sizni ushladi. Qamoq muddati boshlandi."
-            else:
-                message = "Siz qidiruvda emassiz."
-
+            message = "Dam"
         elif action == "crime":
             wanted = min(5, wanted + 1)
-            message = "Noqonuniy harakat qayd etildi. Politsiya qidiruvi oshdi."
-
-        elif action == "heal_hospital":
-            cost = 100
-            if cash < cost:
-                raise HTTPException(status_code=400, detail="Shifoxona: 100 so'm kerak")
-            cash -= cost
-            hp = 100
-            message = "Shifoxonada davolandingiz. HP to'liq."
-
-        elif action == "gamble":
-            bet = min(150, max(10, cash // 10))
-            if cash < bet:
-                raise HTTPException(status_code=400, detail="Kazino uchun pul yetarli emas")
-            if random.random() < 0.45:
-                win = bet * 2
-                cash += win
-                message = f"Kazino: yutdingiz! +{win} so'm"
-            else:
-                cash -= bet
-                message = f"Kazino: yutqazdingiz -{bet} so'm"
-
+            message = "Qidiruv"
         else:
-            raise HTTPException(status_code=400, detail="Noma’lum amal")
-
+            raise HTTPException(status_code=400, detail="Noma'lum")
         con.execute(
             "UPDATE accounts SET cash=?,hunger=?,inventory=?,wanted=?,jailed_until=?,hp=?,weapon=? WHERE token=?",
             (cash, hunger, json.dumps(inv), wanted, jailed, hp, weapon, token),
@@ -2502,6 +2820,28 @@ async def multiplayer(websocket: WebSocket):
                         "type": "correct",
                         "x": r2(fix[0]), "y": r2(fix[1]), "z": r2(fix[2]),
                     })
+            elif kind == "vehicle":
+                # multiplayer car pose sync
+                vid = str(data.get("id", ""))[:32]
+                vx = safe_number(data.get("x"))
+                vz = safe_number(data.get("z"))
+                vr = safe_number(data.get("rot"), 0.0)
+                if vid and vx is not None and vz is not None:
+                    if abs(vx) <= WORLD_LIMIT and abs(vz) <= WORLD_LIMIT:
+                        payload = json.dumps({
+                            "type": "vehicle",
+                            "id": vid,
+                            "pid": player.id,
+                            "x": r2(vx), "z": r2(vz), "rot": r2(vr),
+                        }, separators=(",", ":"))
+                        await game.broadcast(payload, exclude=player.id)
+                        # persist occasionally via life_db if linked
+                        if LIFE_DB_OK:
+                            try:
+                                # map player name -> user is heavy; skip strict owner here
+                                life_db.update_vehicle_pose(vid, vx, vz, vr or 0.0, -1)
+                            except Exception:
+                                pass
             elif kind == "ping":
                 t = safe_number(data.get("t"), 0.0)
                 await game.send(player, {"type": "pong", "t": t})
