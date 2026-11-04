@@ -1,19 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-UZBEK LIFE RP  v2.1  —  FastAPI + WebSocket + Three.js (bitta fayl)
-
-Render start command (o'zgarmagan):
-    uvicorn app:app --host 0.0.0.0 --port $PORT
-
-Arxitektura:
-  World       - shahar tartibi (binolar, mashinalar, to'qnashuv qutilari). Yagona haqiqat
-                manbai SERVER: klient shu ma'lumotdan shaharni quradi.
-  GameServer  - o'yinchilar, harakatni tekshirish, snapshot/broadcast.
-  HTML        - o'yin klienti (Three.js r149 UMD, CDN zaxira ro'yxati bilan).
-
-Keyingi kengaytirish uchun: GameServer holati hozir bitta jarayon xotirasida.
-Ko'p worker/instance kerak bo'lsa, `players` ni Redis pub/sub orqali ulashish kerak
-(Render bepul rejasida 1 ta instance, shuning uchun hozir xotira yetarli).
+UZBEK LIFE RP  v4.0  —  FastAPI + WebSocket + Three.js (bitta fayl)
+Katta hayot simulyatsiyasi: kon, zombilar, qurollar, ochlik, do'konlar,
+50-qavatli uylar, lift, kun/tun, politsiya, noqonuniy bozor.
 """
 
 import asyncio
@@ -39,27 +28,30 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 # =========================
 
 GAME_NAME = "UZBEK LIFE RP"
-VERSION = "3.0.0"
+VERSION = "4.0.0"
 
-MAX_PLAYERS = 32
-WORLD_LIMIT = 180.0
-TICK_RATE = 12              # server snapshot chastotasi (Hz)
-MAX_SPEED = 15.5            # klient yugurishi 13 u/s; qolgani kechikish zaxirasi
-BUDGET_CAP = 10.0           # to'planib qoladigan "masofa byudjeti" (birlik)
-MAX_Y = 3.5                 # sakrash balandligi chegarasi
-PLAYER_RADIUS = 0.3         # server to'qnashuv radiusi (klientniki 0.45, shuning uchun yumshoqroq)
-MAX_MSG_PER_SEC = 60        # shundan ko'pi e'tiborsiz qoldiriladi
-FLOOD_LIMIT = 200           # 1 soniyada shundan ko'p bo'lsa - ulanish uziladi
-STALE_SECONDS = 45          # shuncha vaqt sukut bo'lsa - o'yinchi chiqariladi
-RECENT_SECONDS = 120        # qayta ulanganda oxirgi joyni eslab qolish muddati
-MAX_MESSAGE_SIZE = 1024
+MAX_PLAYERS = 48
+WORLD_LIMIT = 220.0
+TICK_RATE = 12
+MAX_SPEED = 16.0
+BUDGET_CAP = 12.0
+MAX_Y = 4.0
+PLAYER_RADIUS = 0.32
+MAX_MSG_PER_SEC = 70
+FLOOD_LIMIT = 220
+STALE_SECONDS = 50
+RECENT_SECONDS = 180
+MAX_MESSAGE_SIZE = 2048
 
-ROADS = (-160, -120, -80, -40, 0, 40, 80, 120, 160)
-BLOCKS = (-120, -80, -40, 0, 40, 80, 120)
-ROAD_HALF = 6.0
-CAR_LEN = 4.4
-CAR_WID = 1.9
-MONUMENT = (0.0, 0.0, 2.5, 2.5)   # x, z, yarim-en, yarim-bo'y
+ROADS = (-200, -160, -120, -80, -40, 0, 40, 80, 120, 160, 200)
+BLOCKS = (-160, -120, -80, -40, 0, 40, 80, 120, 160)
+ROAD_HALF = 6.5
+CAR_LEN = 4.6
+CAR_WID = 2.0
+MONUMENT = (0.0, 0.0, 3.0, 3.0)
+
+# Kon zonasi (x, z, radius)
+MINE_ZONE = (170.0, 170.0, 28.0)
 
 
 def clean_name(value):
@@ -92,46 +84,50 @@ def wrap_angle(angle):
 # =========================
 
 class World:
-    """Shahar tartibi. Server yaratadi, klient shundan quradi."""
-
     def __init__(self, seed=87321):
         rng = random.Random(seed)
 
-        # Binolar: [x, z, kenglik, chuqurlik, balandlik, uslub(0-4), seed]
-        # O'lchamlar 4 ga karrali (fasad teksturasi derazalarga to'g'ri tushishi uchun)
         self.boxes = []
         for cx in BLOCKS:
             for cz in BLOCKS:
                 if cx == 0 and cz == 0:
-                    continue  # markaziy maydon (park + yodgorlik)
-                outer = max(abs(cx), abs(cz)) >= 80
-                floors = rng.randint(5, 12) if outer else rng.randint(7, 16)
+                    continue
+                outer = max(abs(cx), abs(cz)) >= 120
+                mid = max(abs(cx), abs(cz)) >= 80
+                if outer:
+                    floors = rng.randint(18, 42)
+                    w = rng.choice((32, 36, 40, 44))
+                    d = rng.choice((28, 32, 36, 40))
+                elif mid:
+                    floors = rng.randint(12, 28)
+                    w = rng.choice((24, 28, 32))
+                    d = rng.choice((24, 28, 32))
+                else:
+                    floors = rng.randint(8, 18)
+                    w = rng.choice((20, 24, 28))
+                    d = rng.choice((20, 24, 28))
                 self.boxes.append([
-                    cx, cz,
-                    rng.choice((20, 24, 28)), rng.choice((20, 24, 28)),
-                    floors * 4,
-                    rng.randrange(5),
+                    cx, cz, w, d, floors * 3.8,
+                    rng.randrange(6),
                     rng.randrange(1, 2 ** 31 - 1),
                 ])
 
-        # Mashinalar: [x, z, o'q('x' yoki 'z'), rang(0-7)]
         self.cars = []
         for r in ROADS:
             for a, b in zip(ROADS[:-1], ROADS[1:]):
                 for side in (-1, 1):
-                    if rng.random() < 0.4:
-                        pos = rng.uniform(a + 11, b - 11)
-                        off = side * 4.6
-                        self.cars.append([pos, r + off, "x", rng.randrange(8)])
+                    if rng.random() < 0.45:
+                        pos = rng.uniform(a + 12, b - 12)
+                        off = side * 5.0
+                        self.cars.append([pos, r + off, "x", rng.randrange(10)])
         for r in ROADS:
             for a, b in zip(ROADS[:-1], ROADS[1:]):
                 for side in (-1, 1):
-                    if rng.random() < 0.4:
-                        pos = rng.uniform(a + 11, b - 11)
-                        off = side * 4.6
-                        self.cars.append([r + off, pos, "z", rng.randrange(8)])
+                    if rng.random() < 0.45:
+                        pos = rng.uniform(a + 12, b - 12)
+                        off = side * 5.0
+                        self.cars.append([r + off, pos, "z", rng.randrange(10)])
 
-        # To'qnashuv to'rtburchaklari: (x, z, yarim-en, yarim-bo'y)
         self.rects = [(b[0], b[1], b[2] / 2.0, b[3] / 2.0) for b in self.boxes]
         self.rects.append(MONUMENT)
         for c in self.cars:
@@ -152,13 +148,13 @@ class World:
         return False
 
     def spawn_point(self):
-        for _ in range(60):
+        for _ in range(80):
             angle = random.uniform(0, 2 * math.pi)
-            radius = random.uniform(6.5, 11.0)
+            radius = random.uniform(8.0, 16.0)
             x, z = math.cos(angle) * radius, math.sin(angle) * radius
-            if not self.blocked(x, z, 1.0):
+            if not self.blocked(x, z, 1.2):
                 return x, z
-        return 8.0, 8.0
+        return 10.0, 10.0
 
     def to_dict(self):
         return {
@@ -169,6 +165,7 @@ class World:
             "boxes": self.boxes,
             "cars": self.cars,
             "monument": list(MONUMENT),
+            "mine": list(MINE_ZONE),
             "version": self.version,
             "max": MAX_PLAYERS,
         }
@@ -186,6 +183,7 @@ class Player:
         "id", "name", "ws", "x", "y", "z", "rot",
         "last_seen", "last_move", "budget",
         "msg_t", "msg_n", "last_correct", "send_lock",
+        "hp", "weapon",
     )
 
     def __init__(self, pid, name, ws, x, z):
@@ -204,21 +202,22 @@ class Player:
         self.msg_n = 0
         self.last_correct = 0.0
         self.send_lock = asyncio.Lock()
+        self.hp = 100
+        self.weapon = None
 
     def public(self):
         return {
             "id": self.id, "name": self.name,
             "x": r2(self.x), "y": r2(self.y), "z": r2(self.z), "rot": r2(self.rot),
+            "hp": self.hp,
         }
 
 
 class GameServer:
     def __init__(self):
         self.players = {}
-        self.recent = {}      # ism -> (x, z, vaqt): qayta ulanganda joyni tiklash
+        self.recent = {}
         self.dirty = False
-
-    # ---- yordamchilar ----
 
     def _new_id(self):
         while True:
@@ -274,10 +273,7 @@ class GameServer:
             pass
         await self.broadcast(json.dumps({"type": "leave", "id": pid}, separators=(",", ":")))
 
-    # ---- harakatni tekshirish ----
-
     def apply_move(self, player, data, now):
-        """To'g'ri bo'lsa None, rad etilsa - tuzatish (x, y, z) qaytaradi."""
         x = safe_number(data.get("x"))
         y = safe_number(data.get("y"), 0.0)
         z = safe_number(data.get("z"))
@@ -291,10 +287,10 @@ class GameServer:
 
         ok = abs(x) <= WORLD_LIMIT and abs(z) <= WORLD_LIMIT
         dist = math.hypot(x - player.x, z - player.z)
-        if ok and dist > player.budget + 0.25:
-            ok = False                      # juda tez harakat (teleport / speed-hack)
+        if ok and dist > player.budget + 0.3:
+            ok = False
         if ok and world.blocked(x, z, PLAYER_RADIUS):
-            ok = False                      # bino yoki mashina ichiga kirish
+            ok = False
 
         if not ok:
             if now - player.last_correct > 0.2:
@@ -311,24 +307,19 @@ class GameServer:
         player.x, player.y, player.z, player.rot = x, y, z, rot
         return None
 
-    # ---- davriy ish ----
-
     async def tick(self):
         now = time.monotonic()
-
         for pid in [pid for pid, p in self.players.items() if now - p.last_seen > STALE_SECONDS]:
             await self.drop(pid)
-
         for key in [k for k, v in self.recent.items() if now - v[2] > RECENT_SECONDS]:
             self.recent.pop(key, None)
-
         if not self.dirty or not self.players:
             return
         self.dirty = False
         payload = json.dumps({
             "type": "state",
             "p": [
-                [p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.rot)]
+                [p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.rot), p.hp]
                 for p in self.players.values()
             ],
         }, separators=(",", ":"))
@@ -346,7 +337,7 @@ async def broadcaster():
             await game.tick()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # tsikl hech qachon to'xtamasin
+        except Exception as exc:
             print("tick xatosi:", repr(exc))
         await asyncio.sleep(interval)
 
@@ -364,48 +355,113 @@ async def lifespan(application):
 
 
 # =========================
-# PERSISTENT LIFE SIMULATION (SQLite)
+# PERSISTENT LIFE SIMULATION
 # =========================
 DB_PATH = os.environ.get("DATABASE_PATH", "uzbek_life_rp.db")
 DB_LOCK = asyncio.Lock()
+
 SHOP = {
-    "non": {"title": "Non", "price": 5, "hunger": 18, "kind": "food"},
-    "lavash": {"title": "Lavash", "price": 25, "hunger": 45, "kind": "food"},
-    "osh": {"title": "Osh", "price": 35, "hunger": 60, "kind": "food"},
+    # Oziq-ovqat
+    "non": {"title": "Non", "price": 5, "hunger": 15, "kind": "food"},
+    "lavash": {"title": "Lavash", "price": 22, "hunger": 40, "kind": "food"},
+    "osh": {"title": "Palov (Osh)", "price": 35, "hunger": 55, "kind": "food"},
+    "somsa": {"title": "Somsa", "price": 12, "hunger": 22, "kind": "food"},
+    "shashlik": {"title": "Shashlik", "price": 40, "hunger": 50, "kind": "food"},
+    "manti": {"title": "Manti", "price": 28, "hunger": 42, "kind": "food"},
+    "lagmon": {"title": "Lag'mon", "price": 30, "hunger": 48, "kind": "food"},
+    "choy": {"title": "Choy", "price": 3, "hunger": 5, "kind": "food"},
     "suv": {"title": "Suv", "price": 4, "hunger": 8, "kind": "food"},
-    "medkit": {"title": "Tibbiy quti", "price": 80, "hunger": 0, "kind": "supply"},
-    "flashlight": {"title": "Fonар", "price": 45, "hunger": 0, "kind": "supply"},
-    "pistol": {"title": "O‘yin quroli", "price": 250, "hunger": 0, "kind": "game_item"},
-    "rifle": {"title": "O‘yin miltig‘i", "price": 650, "hunger": 0, "kind": "game_item"},
-    "luxury_car": {"title": "Premium avtomobil", "price": 12000, "hunger": 0, "kind": "vehicle"},
+    "kola": {"title": "Kola", "price": 8, "hunger": 6, "kind": "food"},
+    "pirojnoe": {"title": "Pirojnoe", "price": 15, "hunger": 18, "kind": "food"},
+    "pitsa": {"title": "Pitsa", "price": 45, "hunger": 58, "kind": "food"},
+    # Tibbiy
+    "medkit": {"title": "Tibbiy quti", "price": 80, "hunger": 0, "kind": "supply", "heal": 50},
+    "bandage": {"title": "Bint", "price": 25, "hunger": 0, "kind": "supply", "heal": 20},
+    "energy": {"title": "Energiya ichimligi", "price": 35, "hunger": 10, "kind": "supply"},
+    # Qurollar (oddiy)
+    "bat": {"title": "Beyzbol tayoq", "price": 120, "hunger": 0, "kind": "weapon", "dmg": 18},
+    "knife": {"title": "Pichoq", "price": 180, "hunger": 0, "kind": "weapon", "dmg": 25},
+    "pistol": {"title": "Pistolet", "price": 450, "hunger": 0, "kind": "weapon", "dmg": 40},
+    "shotgun": {"title": "Miltiq", "price": 900, "hunger": 0, "kind": "weapon", "dmg": 70},
+    "rifle": {"title": "Avtomat", "price": 1800, "hunger": 0, "kind": "weapon", "dmg": 55},
+    "ammo": {"title": "O'q-dori x20", "price": 60, "hunger": 0, "kind": "ammo"},
+    # Mebel
     "sofa": {"title": "Divan", "price": 350, "hunger": 0, "kind": "furniture"},
     "bed": {"title": "Krovat", "price": 500, "hunger": 0, "kind": "furniture"},
     "tv": {"title": "Televizor", "price": 900, "hunger": 0, "kind": "furniture"},
+    "fridge": {"title": "Muzlatgich", "price": 1100, "hunger": 0, "kind": "furniture"},
+    "table": {"title": "Stol to'plami", "price": 280, "hunger": 0, "kind": "furniture"},
+    # Transport
+    "luxury_car": {"title": "Premium sport avto", "price": 25000, "hunger": 0, "kind": "vehicle"},
+    "suv": {"title": "SUV", "price": 15000, "hunger": 0, "kind": "vehicle"},
+    # Noqonuniy
     "illegal_key": {"title": "Noqonuniy bozor kaliti", "price": 400, "hunger": 0, "kind": "illegal"},
+    "black_pistol": {"title": "Qora bozor pistoleti", "price": 700, "hunger": 0, "kind": "illegal_weapon", "dmg": 48},
+    "black_rifle": {"title": "Qora avtomat", "price": 2800, "hunger": 0, "kind": "illegal_weapon", "dmg": 65},
+    "drugs": {"title": "Noqonuniy modda", "price": 350, "hunger": 0, "kind": "illegal"},
+    "fake_docs": {"title": "Soxta hujjatlar", "price": 500, "hunger": 0, "kind": "illegal"},
 }
+
+WEAPON_DMG = {
+    "bat": 18, "knife": 25, "pistol": 40, "shotgun": 70, "rifle": 55,
+    "black_pistol": 48, "black_rifle": 65, "fist": 8,
+}
+
 
 def db_conn():
     con = sqlite3.connect(DB_PATH, timeout=20)
     con.row_factory = sqlite3.Row
     return con
 
+
 def init_game_db():
     con = db_conn()
     try:
         con.execute("PRAGMA journal_mode=WAL")
-        con.execute("CREATE TABLE IF NOT EXISTS accounts (token TEXT PRIMARY KEY, name TEXT NOT NULL, cash INTEGER NOT NULL DEFAULT 0, hunger INTEGER NOT NULL DEFAULT 100, inventory TEXT NOT NULL DEFAULT '{}', wanted INTEGER NOT NULL DEFAULT 0, jailed_until INTEGER NOT NULL DEFAULT 0, mine_at REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                token TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                cash INTEGER NOT NULL DEFAULT 0,
+                hunger INTEGER NOT NULL DEFAULT 100,
+                inventory TEXT NOT NULL DEFAULT '{}',
+                wanted INTEGER NOT NULL DEFAULT 0,
+                jailed_until INTEGER NOT NULL DEFAULT 0,
+                mine_at REAL NOT NULL DEFAULT 0,
+                hp INTEGER NOT NULL DEFAULT 100,
+                weapon TEXT DEFAULT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        # migratsiya
+        cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
+        if "hp" not in cols:
+            con.execute("ALTER TABLE accounts ADD COLUMN hp INTEGER NOT NULL DEFAULT 100")
+        if "weapon" not in cols:
+            con.execute("ALTER TABLE accounts ADD COLUMN weapon TEXT DEFAULT NULL")
         con.execute("CREATE INDEX IF NOT EXISTS idx_accounts_name ON accounts(name)")
         con.commit()
     finally:
         con.close()
 
+
 init_game_db()
+
 
 def account_state(row):
     now = int(time.time())
-    return {"name": row["name"], "cash": row["cash"], "hunger": row["hunger"],
-            "inventory": json.loads(row["inventory"] or "{}"), "wanted": row["wanted"],
-            "jailed_until": max(0, row["jailed_until"]-now), "shop": SHOP}
+    return {
+        "name": row["name"],
+        "cash": row["cash"],
+        "hunger": row["hunger"],
+        "hp": row["hp"] if "hp" in row.keys() else 100,
+        "weapon": row["weapon"] if "weapon" in row.keys() else None,
+        "inventory": json.loads(row["inventory"] or "{}"),
+        "wanted": row["wanted"],
+        "jailed_until": max(0, row["jailed_until"] - now),
+        "shop": SHOP,
+    }
+
 
 app = FastAPI(title=GAME_NAME, version=VERSION, lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -423,7 +479,7 @@ HTML = r"""<!DOCTYPE html>
 <meta name="theme-color" content="#0d1620">
 <title>UZBEK LIFE RP</title>
 <style>
-:root{--g:#32d99a;--bg:#0d1620;--panel:rgba(13,22,32,.78);--line:rgba(255,255,255,.16);--js:clamp(104px,24vmin,150px)}
+:root{--g:#32d99a;--bg:#0d1620;--panel:rgba(13,22,32,.82);--line:rgba(255,255,255,.16);--js:clamp(104px,24vmin,150px);--danger:#ff6b5b}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:#fff;
  font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
@@ -438,6 +494,7 @@ h1.logo{margin:0 0 6px;font-size:clamp(26px,6vw,40px);letter-spacing:.18em;color
 #booterr{display:none;max-width:420px;margin-top:16px;color:#ffb4a8;font-size:14px;line-height:1.5}
 .btn{display:block;width:100%;padding:14px;margin-top:12px;background:var(--g);border:0;border-radius:10px;color:#0b2a1f;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.04em}
 .btn:hover{background:#63edb7}
+.btn.sec{background:#1e2f3e;color:#dfe9ef;border:1px solid var(--line)}
 #login{z-index:60;display:none;background:linear-gradient(180deg,rgba(8,14,20,.55),rgba(8,14,20,.8))}
 #loginbox{width:min(92vw,380px);padding:28px;background:rgba(18,30,41,.9);border:1px solid rgba(50,217,154,.35);border-radius:16px}
 #loginbox p{color:#aebdc7;font-size:13px;margin:4px 0 16px}
@@ -445,42 +502,51 @@ input#nickname{width:100%;padding:14px;background:#0d1620;border:1px solid #4559
 input#nickname:focus{border-color:var(--g)}
 #error{color:#ff8a80;font-size:13px;min-height:18px;margin-top:10px}
 .panel{position:fixed;z-index:10;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-#hud{top:max(12px,env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left))}
-#hud h2{margin:0 0 4px;color:var(--g);font-size:16px;letter-spacing:.1em}
+#hud{top:max(12px,env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left));min-width:160px}
+#hud h2{margin:0 0 4px;color:var(--g);font-size:15px;letter-spacing:.1em}
 #status{font-size:12px;color:#ffcf7a}
 #status.on{color:var(--g)}
-#perf{font-size:12px;color:#b8c5ce;margin-top:3px}
-#qbtn{margin-top:8px;padding:6px 10px;background:#1b2b3a;border:1px solid var(--line);border-radius:8px;color:#dfe9ef;font-size:11px;cursor:pointer;font-weight:700}
+#perf{font-size:11px;color:#b8c5ce;margin-top:3px}
+#lifeStats{font-size:12px;color:#d0dde6;margin-top:6px;line-height:1.55}
+#lifeStats b{color:var(--g)}
+#lifeStats .bad{color:var(--danger)}
+#qbtn,#shopbtn,#invbtn{margin-top:6px;padding:6px 10px;background:#1b2b3a;border:1px solid var(--line);border-radius:8px;color:#dfe9ef;font-size:11px;cursor:pointer;font-weight:700;width:100%}
 #players{top:max(12px,env(safe-area-inset-top));right:max(12px,env(safe-area-inset-right));min-width:150px;max-width:44vw}
 #players b{color:var(--g);font-size:12px;letter-spacing:.06em}
 #count{margin-top:6px;font-size:13px}
-#plist{font-size:12px;color:#c8d4dc;margin-top:6px;max-height:34vh;overflow:hidden}
+#plist{font-size:12px;color:#c8d4dc;margin-top:6px;max-height:28vh;overflow:hidden}
 #plist div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#help{position:fixed;bottom:max(14px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:10;background:var(--panel);padding:10px 16px;border-radius:10px;font-size:12px;white-space:nowrap}
+#help{position:fixed;bottom:max(14px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:10;background:var(--panel);padding:10px 16px;border-radius:10px;font-size:11px;white-space:nowrap}
 #net{position:fixed;top:max(12px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:70;padding:9px 16px;border-radius:20px;background:rgba(20,32,44,.92);border:1px solid var(--line);font-size:13px;display:none;max-width:84vw;text-align:center;pointer-events:none}
 #net.warn{border-color:#ffb74d;color:#ffd699}
 #net.ok{border-color:var(--g);color:#b9f5dd}
 #net.err{border-color:#ff7b6b;color:#ffb4a8}
-#toast{position:fixed;bottom:120px;left:50%;transform:translateX(-50%);z-index:90;background:rgba(40,16,16,.92);border:1px solid #ff7b6b;padding:10px 16px;border-radius:10px;font-size:13px;display:none;max-width:88vw;pointer-events:none}
+#toast{position:fixed;bottom:130px;left:50%;transform:translateX(-50%);z-index:90;background:rgba(40,16,16,.92);border:1px solid #ff7b6b;padding:10px 16px;border-radius:10px;font-size:13px;display:none;max-width:88vw;pointer-events:none}
 #toast.show{display:block}
+#shopModal,#invModal{display:none;position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.55);align-items:center;justify-content:center;padding:16px}
+#shopModal.show,#invModal.show{display:flex}
+.modalbox{width:min(94vw,420px);max-height:80vh;overflow:auto;background:#121e29;border:1px solid rgba(50,217,154,.4);border-radius:14px;padding:16px}
+.modalbox h3{margin:0 0 10px;color:var(--g);font-size:16px}
+.itemrow{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #243240;font-size:13px}
+.itemrow button{padding:6px 12px;background:var(--g);border:0;border-radius:8px;color:#0b2a1f;font-weight:700;cursor:pointer;font-size:12px}
+.itemrow button:disabled{opacity:.4}
 #touch{display:none}
 body.touch #touch{display:block}
 body.touch #help{display:none}
 #joyzone{position:fixed;left:0;bottom:0;width:48%;height:58%;z-index:20;touch-action:none}
 #joybase{position:absolute;width:var(--js);height:var(--js);border-radius:50%;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.28)}
 #joyknob{position:absolute;left:50%;top:50%;width:42%;height:42%;margin:-21% 0 0 -21%;border-radius:50%;background:rgba(50,217,154,.75)}
-#btns{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(22px,env(safe-area-inset-bottom));z-index:20;display:flex;flex-direction:column;gap:14px;align-items:flex-end}
-.tbtn{width:clamp(70px,17vmin,102px);height:clamp(70px,17vmin,102px);border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(13,22,32,.55);color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;touch-action:none}
+#btns{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(22px,env(safe-area-inset-bottom));z-index:20;display:flex;flex-direction:column;gap:12px;align-items:flex-end}
+.tbtn{width:clamp(64px,16vmin,96px);height:clamp(64px,16vmin,96px);border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(13,22,32,.55);color:#fff;font-weight:800;font-size:10px;letter-spacing:.04em;touch-action:none}
 .tbtn.on{background:rgba(50,217,154,.72);color:#08251a}
-@media (max-width:700px){
- #hud{padding:9px 11px}#players{padding:9px 11px;min-width:120px}
- #hud h2{font-size:14px}
-}
+#hpbar{position:fixed;bottom:max(90px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:15;width:min(220px,50vw);height:10px;background:#1a2530;border-radius:6px;border:1px solid #334;overflow:hidden;display:none}
+#hpfill{height:100%;width:100%;background:linear-gradient(90deg,#32d99a,#7dffb0);transition:width .2s}
+@media (max-width:700px){#hud{padding:9px 11px}#players{padding:9px 11px;min-width:120px}#hud h2{font-size:13px}}
 @media (max-height:480px){#plist{display:none}}
 </style>
 </head>
 <body>
-<noscript><div class="ov" style="z-index:200;background:#0d1620">JavaScript yoqilmagan. O‘yin uchun JavaScript kerak.</div></noscript>
+<noscript><div class="ov" style="z-index:200;background:#0d1620">JavaScript yoqilmagan.</div></noscript>
 <canvas id="game"></canvas>
 
 <div id="boot" class="ov">
@@ -493,7 +559,7 @@ body.touch #help{display:none}
 <div id="login" class="ov">
  <div id="loginbox">
   <h1 class="logo" style="font-size:26px">UZBEK LIFE RP</h1>
-  <p>Yangi hayotingizni boshlang</p>
+  <p>Yangi hayotingizni boshlang — kon, zombilar, uylar, mashinalar</p>
   <input id="nickname" maxlength="20" placeholder="O‘yinchi ismi" autocomplete="nickname">
   <div id="error"></div>
   <button class="btn" id="start">SHAHARGA KIRISH</button>
@@ -502,41 +568,48 @@ body.touch #help{display:none}
 
 <div id="net"></div>
 <div id="toast"></div>
+<div id="hpbar"><div id="hpfill"></div></div>
 
 <div id="hud" class="panel">
  <h2>UZBEK LIFE RP</h2>
  <div id="status">Ulanmagan</div>
  <div id="perf">FPS —</div>
+ <div id="lifeStats">Yuklanmoqda...</div>
+ <button id="shopbtn" type="button">DO‘KON</button>
+ <button id="invbtn" type="button">INVENTAR</button>
  <button id="qbtn" type="button">GRAFIKA: AUTO</button>
 </div>
 
 <div id="players" class="panel">
  <b>ONLAYN O‘YINCHILAR</b>
- <div id="count">0 / 32</div>
+ <div id="count">0 / 48</div>
  <div id="plist"></div>
 </div>
 
-<div id="help">W A S D — yurish &nbsp;|&nbsp; SHIFT — yugurish &nbsp;|&nbsp; SPACE — sakrash &nbsp;|&nbsp; Sichqoncha (bosib tortish) — kamera &nbsp;|&nbsp; G‘ildirak — masofa</div>
+<div id="help">W A S D — yurish | SHIFT — yugurish | SPACE — sakrash | E — o‘zaro ta’sir | F — hujum | H — uyqu | Sichqoncha — kamera</div>
+
+<div id="shopModal"><div class="modalbox"><h3>DO‘KON</h3><div id="shopList"></div><button class="btn sec" id="shopClose">YOPISH</button></div></div>
+<div id="invModal"><div class="modalbox"><h3>INVENTAR</h3><div id="invList"></div><button class="btn sec" id="invClose">YOPISH</button></div></div>
 
 <div id="touch">
  <div id="joyzone"><div id="joybase"><div id="joyknob"></div></div></div>
  <div id="btns">
   <button class="tbtn" id="btnRun" type="button">YUGUR</button>
   <button class="tbtn" id="btnJump" type="button">SAKRASH</button>
+  <button class="tbtn" id="btnAct" type="button">E / F</button>
  </div>
 </div>
 
 <script>
-/* Alohida kichik skript: asosiy skriptda sintaksis xatosi bo'lsa ham foydalanuvchi xabar oladi */
 window.__booted=false;
 setTimeout(function(){
  if(!window.__booted){
   var e=document.getElementById('booterr'); if(!e)return;
   e.style.display='block';
-  document.getElementById('booterrtxt').textContent='O‘yin skripti ishga tushmadi. Sahifani yangilang yoki brauzeringizni yangilang.';
+  document.getElementById('booterrtxt').textContent='O‘yin skripti ishga tushmadi. Sahifani yangilang.';
   document.getElementById('bootretry').onclick=function(){location.reload();};
  }
-},12000);
+},14000);
 </script>
 
 <script>
@@ -558,13 +631,11 @@ function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localSto
 function hashStr(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 function lcg(s){return function(){s=(Math.imul(s,1664525)+1013904223)>>>0;return s/4294967296;};}
 
-// ======================= XATOLARNI USHLASH =======================
 let toastTimer=0,errN=0;
 function toast(msg,ms){const t=$('toast');t.textContent=msg;t.className='show';clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.className='';},ms||4200);}
 window.addEventListener('error',function(e){console.error(e.error||e.message);if(++errN<=3)toast('Xatolik: '+(e.message||'noma’lum'));});
 window.addEventListener('unhandledrejection',function(e){console.error(e.reason);if(++errN<=3)toast('Xatolik: '+((e.reason&&e.reason.message)||e.reason));});
 
-// ======================= YUKLASH EKRANI =======================
 function setBoot(p,m){$('bootbar').style.width=p+'%';$('bootmsg').textContent=m;}
 function bootFail(m){$('bootmsg').textContent='';$('booterr').style.display='block';$('booterrtxt').textContent=m;}
 $('bootretry').onclick=function(){location.reload();};
@@ -591,16 +662,15 @@ async function loadThree(){
   try{await loadScript(THREE_URLS[i],10000);return;}
   catch(e){console.warn('CDN xato:',THREE_URLS[i],e.message);}
  }
- throw new Error('Three.js kutubxonasi hech bir manbadan yuklanmadi. Internetni tekshirib, “Qayta urinish” tugmasini bosing.');
+ throw new Error('Three.js yuklanmadi. Internetni tekshirib qayta urinib ko‘ring.');
 }
 
-// ======================= GRAFIKA PROFILLARI =======================
 const LEVELS=['LOW','MEDIUM','HIGH','ULTRA'];
 const PROFILES=[
- {pr:1,   maxPx:0.95e6,shadow:0,   sr:0, fog:150,aa:false,env:false,far:false,clouds:false,hemi:0.85},
- {pr:1.25,maxPx:1.8e6, shadow:1024,sr:70,fog:240,aa:true, env:false,far:false,clouds:true, hemi:0.8},
- {pr:1.75,maxPx:3.4e6, shadow:2048,sr:60,fog:330,aa:true, env:true, far:true, clouds:true, hemi:0.5},
- {pr:2.5, maxPx:6.5e6, shadow:4096,sr:52,fog:430,aa:true, env:true, far:true, clouds:true, hemi:0.45}
+ {pr:1,   maxPx:0.95e6,shadow:0,   sr:0, fog:160,aa:false,env:false,far:false,clouds:false,hemi:0.85},
+ {pr:1.25,maxPx:1.8e6, shadow:1024,sr:80,fog:260,aa:true, env:false,far:false,clouds:true, hemi:0.8},
+ {pr:1.75,maxPx:3.4e6, shadow:2048,sr:70,fog:360,aa:true, env:true, far:true, clouds:true, hemi:0.5},
+ {pr:2.5, maxPx:6.5e6, shadow:4096,sr:60,fog:480,aa:true, env:true, far:true, clouds:true, hemi:0.45}
 ];
 const touchPrimary=!!(window.matchMedia&&matchMedia('(pointer:coarse)').matches);
 let qMode=store('ulrp_q')||'AUTO';
@@ -637,15 +707,17 @@ function scoreDevice(g){
 }
 const levelFromScore=function(s){return s>=8?3:(s>=6?2:(s>=4?1:0));};
 
-// ======================= ENGINE O'ZGARUVCHILARI =======================
 let renderer,scene,camera,sun,hemi,sky,cloudGroup,farCity,envTex,envTried=false;
 let SUN_DIR,dummy,me;
 let curLevel=2,maxTex=4096,ANISO=2,TEXS=256;
 const canvas=$('game');
-const colliders=[];   // [x,z,hw,hd,h]
+const colliders=[];
 const matCache={};
 
-// ======================= YORDAMCHI GRAFIKA =======================
+// Kun/tun
+let dayTime=0.28; // 0..1 (0=tun, 0.25=tong, 0.5=kun, 0.75=kech)
+let daySpeed=0.000012;
+
 function canvasTex(size,draw){
  const c=document.createElement('canvas');c.width=c.height=size;
  const g=c.getContext('2d');draw(g,size);
@@ -690,7 +762,7 @@ function drawFacade(g,size,st){
    let x,y,ww,hh,pad;
    if(st.curtain){x=(w*4+0.15)*S;y=(f*4+0.2)*S;ww=3.7*S;hh=3.55*S;pad=0.1*S;}
    else{x=(w*4+0.8)*S;y=(f*4+0.9)*S;ww=2.4*S;hh=2.3*S;pad=0.13*S;}
-   const lit=Math.random()<0.1;
+   const lit=Math.random()<0.12;
    const grd=g.createLinearGradient(x,y,x+ww,y+hh);
    if(lit){grd.addColorStop(0,'#ffe9a8');grd.addColorStop(1,'#d9aa55');}
    else{grd.addColorStop(0,st.ga);grd.addColorStop(1,st.gb);}
@@ -734,13 +806,12 @@ function buildEnv(){
   const s=new THREE.Scene();s.add(makeSkyMesh(100));
   const rt=pm.fromScene(s,0,0.1,200);
   envTex=rt.texture;pm.dispose();
- }catch(e){console.warn('Muhit xaritasi yaratilmadi:',e);envTex=null;}
+ }catch(e){console.warn('Muhit xaritasi:',e);envTex=null;}
 }
 
-// ======================= ENGINE =======================
 function initEngine(){
  const probe=probeGPU();
- if(!probe.ok)throw new Error('Brauzeringiz WebGL ni qo‘llab-quvvatlamaydi yoki grafik tezlatgich o‘chirilgan.');
+ if(!probe.ok)throw new Error('WebGL qo‘llab-quvvatlanmaydi.');
  let start=levelFromScore(scoreDevice(probe));
  if(qMode!=='AUTO')start=LEVELS.indexOf(qMode);
  else{const s=parseInt(store('ulrp_lv'),10);if(s>=0&&s<=3)start=s;}
@@ -753,27 +824,27 @@ function initEngine(){
  ANISO=Math.min(renderer.capabilities.getMaxAnisotropy()||1,start>=3?8:(start>=2?4:2));
  TEXS=start>=2?512:256;
 
- canvas.addEventListener('webglcontextlost',function(e){e.preventDefault();toast('Grafika konteksti yo‘qoldi. Sahifa qayta yuklanadi...');});
+ canvas.addEventListener('webglcontextlost',function(e){e.preventDefault();toast('Grafika konteksti yo‘qoldi...');});
  canvas.addEventListener('webglcontextrestored',function(){location.reload();});
 
  SUN_DIR=new THREE.Vector3(0.55,0.62,0.45).normalize();
  dummy=new THREE.Object3D();
- me={pos:new THREE.Vector3(),vy:0,grounded:true,rot:0,speed:0,avatar:null};
+ me={pos:new THREE.Vector3(),vy:0,grounded:true,rot:0,speed:0,avatar:null,hp:100,weapon:null,attackCd:0};
 
  scene=new THREE.Scene();
  const HOR=0xc9dcec;
  scene.background=new THREE.Color(HOR);
- scene.fog=new THREE.Fog(HOR,60,300);
- camera=new THREE.PerspectiveCamera(68,innerWidth/innerHeight,0.3,600);
+ scene.fog=new THREE.Fog(HOR,60,320);
+ camera=new THREE.PerspectiveCamera(68,innerWidth/innerHeight,0.3,700);
  camera.position.set(0,20,45);
 
  hemi=new THREE.HemisphereLight(0xcfe3ff,0x6f7a63,0.7);scene.add(hemi);
  sun=new THREE.DirectionalLight(0xfff1d6,1.05);
  sun.castShadow=true;sun.shadow.bias=-0.0004;sun.shadow.normalBias=0.05;
- sun.shadow.camera.near=1;sun.shadow.camera.far=320;
+ sun.shadow.camera.near=1;sun.shadow.camera.far=360;
  scene.add(sun);scene.add(sun.target);
 
- sky=makeSkyMesh(450);scene.add(sky);
+ sky=makeSkyMesh(520);scene.add(sky);
  fitRenderer();
 }
 
@@ -793,7 +864,6 @@ function applyQuality(i){
  i=clamp(i,0,3);curLevel=i;
  const P=PROFILES[i];
  fitRenderer();
- // soyalar
  if(P.shadow){
   const sz=Math.min(P.shadow,maxTex,(touchPrimary&&P.shadow>2048)?2048:P.shadow);
   if(sun.shadow.mapSize.x!==sz){
@@ -805,7 +875,6 @@ function applyQuality(i){
   sun.shadow.camera.updateProjectionMatrix();
   sun.castShadow=true;
  }else sun.castShadow=false;
- // tuman, muhit, yorug'lik
  scene.fog.far=P.fog;scene.fog.near=P.fog*0.22;
  if(P.env&&!envTex&&!envTried)buildEnv();
  scene.environment=(P.env&&envTex)?envTex:null;
@@ -823,7 +892,6 @@ $('qbtn').addEventListener('click',function(){
  else{mon.low=mon.high=0;mon.lastChange=performance.now();updateQBtn();}
 });
 
-// FPS monitor + adaptiv sifat
 const mon={t0:0,frames:0,low:0,high:0,lastChange:0,ceiling:3,upAt:0,bootT:0};
 let fpsNow=0,pingMs=0;
 function monitor(now){
@@ -838,7 +906,7 @@ function monitor(now){
  if(fps<38){
   mon.high=0;mon.low++;
   if(mon.low>=3&&curLevel>0){
-   if(mon.upAt&&now-mon.upAt<45000)mon.ceiling=curLevel-1;   // yaqinda ko'tarilgan edi, ko'tarmadi
+   if(mon.upAt&&now-mon.upAt<45000)mon.ceiling=curLevel-1;
    applyQuality(curLevel-1);store('ulrp_lv',String(curLevel));
    mon.lastChange=now;mon.low=0;
   }
@@ -852,21 +920,33 @@ function monitor(now){
 }
 document.addEventListener('visibilitychange',function(){mon.t0=0;mon.low=0;mon.high=0;if(!document.hidden)tryReconnectNow();});
 
-// ======================= SHAHAR QURISH =======================
+// ======================= SHAHAR =======================
 let vehicles=[];
 let activeCar=null,insideHome=false,homeReturn=null,homeGroup=null,elevatorFloor=1;
+let zombies=[];
+let mineMarker=null;
+
 function showHint(t){const h=document.getElementById('interactHint');if(h){h.textContent=t;h.style.display=t?'block':'none';}}
-function nearestBuilding(){let best=null,bd=999;for(const b of W.boxes){const r=lcg(b[6]);for(let k=0;k<15;k++)r();const doorX=b[0]+(r()-0.5)*(b[2]-8);const doorZ=b[1]+b[3]/2+1.8;const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}}return best;}
+function nearestBuilding(){
+ let best=null,bd=999;
+ for(const b of W.boxes){
+  const r=lcg(b[6]);for(let k=0;k<15;k++)r();
+  const doorX=b[0]+(r()-0.5)*(b[2]-8);
+  const doorZ=b[1]+b[3]/2+1.8;
+  const dist=Math.hypot(me.pos.x-doorX,me.pos.z-doorZ);
+  if(dist<bd){bd=dist;best={b,dist,doorX,doorZ};}
+ }
+ return best;
+}
+
 function buildWorld(){
  const lim=W.limit,R=W.roads,RH=W.road_half;
 
- // --- yer
  const grassTex=canvasTex(256,function(g,s){g.fillStyle='#4f6b45';g.fillRect(0,0,s,s);speckle(g,s,9000,['#5d7b50','#436038','#6b8a58','#3d5533'],0.25,0.7,2.2);});
- grassTex.repeat.set(220,220);
- const ground=new THREE.Mesh(new THREE.PlaneGeometry(1000,1000),new THREE.MeshStandardMaterial({map:grassTex,roughness:1,metalness:0,envMapIntensity:0.2}));
+ grassTex.repeat.set(260,260);
+ const ground=new THREE.Mesh(new THREE.PlaneGeometry(1200,1200),new THREE.MeshStandardMaterial({map:grassTex,roughness:1,metalness:0,envMapIntensity:0.2}));
  ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
 
- // --- yo'llar
  const roadTex=canvasTex(256,function(g,s){
   g.fillStyle='#363b40';g.fillRect(0,0,s,s);
   speckle(g,s,7000,['#2a2e32','#4a5056','#25282b','#5a6066'],0.15,0.6,1.8);
@@ -874,7 +954,7 @@ function buildWorld(){
   g.fillStyle='#e7d78a';g.fillRect(s/2-3,s*0.08,6,s*0.42);
   g.fillStyle='rgba(235,235,230,0.85)';g.fillRect(s*0.04,0,3,s);g.fillRect(s*0.96-3,0,3,s);
  });
- const L=(lim+40)*2;
+ const L=(lim+50)*2;
  roadTex.repeat.set(1,L/(RH*2));
  const roadMat=new THREE.MeshStandardMaterial({map:roadTex,roughness:0.92,metalness:0,envMapIntensity:0.2,polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1});
  const roadGeo=new THREE.PlaneGeometry(RH*2,L);roadGeo.rotateX(-Math.PI/2);
@@ -883,7 +963,6 @@ function buildWorld(){
   const b=new THREE.Mesh(roadGeo,roadMat);b.rotation.y=Math.PI/2;b.position.set(0,0.012,r);b.receiveShadow=true;scene.add(b);
  });
 
- // --- chorrahalar (piyodalar o'tish joyi bilan)
  const ixTex=canvasTex(256,function(g,s){
   g.fillStyle='#363b40';g.fillRect(0,0,s,s);
   speckle(g,s,6000,['#2a2e32','#4a5056','#25282b'],0.15,0.6,1.8);
@@ -904,15 +983,14 @@ function buildWorld(){
  });});
  scene.add(ix);
 
- // --- kvartal plitalari (trotuar)
  const plateTex=canvasTex(256,function(g,s){
   g.fillStyle='#a2a4a1';g.fillRect(0,0,s,s);
   speckle(g,s,5000,['#8d8f8c','#b4b6b3','#7e807d'],0.15,0.5,1.6);
   g.strokeStyle='rgba(60,62,60,0.55)';g.lineWidth=3;g.strokeRect(1.5,1.5,s-3,s-3);
  });
- plateTex.repeat.set(7,7);
+ plateTex.repeat.set(8,8);
  const plateMat=new THREE.MeshStandardMaterial({map:plateTex,roughness:0.9,metalness:0,envMapIntensity:0.25});
- const plateGeo=new THREE.BoxGeometry(28,0.08,28);
+ const plateGeo=new THREE.BoxGeometry(36,0.08,36);
  const plates=new THREE.InstancedMesh(plateGeo,plateMat,W.blocks.length*W.blocks.length-1);
  plates.frustumCulled=false;plates.receiveShadow=true;
  n=0;
@@ -922,7 +1000,7 @@ function buildWorld(){
  });});
  scene.add(plates);
 
- // --- markaziy park
+ // Markaziy park + ko'proq elementlar
  const parkTex=canvasTex(512,function(g,s){
   g.fillStyle='#4d6c43';g.fillRect(0,0,s,s);
   speckle(g,s,16000,['#5d7b50','#3d5533','#6b8a58'],0.25,0.7,2.4);
@@ -931,25 +1009,41 @@ function buildWorld(){
   g.beginPath();g.arc(s/2,s/2,6.5*u,0,TAU);g.fill();
   g.strokeStyle='#8f8869';g.lineWidth=3;g.stroke();
  });
- const park=new THREE.Mesh(plateGeo,new THREE.MeshStandardMaterial({map:parkTex,roughness:1,envMapIntensity:0.2}));
+ const park=new THREE.Mesh(new THREE.BoxGeometry(40,0.08,40),new THREE.MeshStandardMaterial({map:parkTex,roughness:1,envMapIntensity:0.2}));
  park.position.set(0,0.04,0);park.receiveShadow=true;scene.add(park);
 
- // --- yodgorlik
+ // Park skameykalar, favvora
+ const benchMat=mat(0x6b4f2a,0.7);
+ for(let i=0;i<8;i++){
+  const a=i/8*TAU;
+  const bx=Math.cos(a)*14,bz=Math.sin(a)*14;
+  const seat=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.12,0.55),benchMat);
+  seat.position.set(bx,0.45,bz);seat.rotation.y=-a;seat.castShadow=true;scene.add(seat);
+  const back=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.55,0.1),benchMat);
+  back.position.set(bx-Math.sin(a)*0.25,0.75,bz-Math.cos(a)*0.25);back.rotation.y=-a;scene.add(back);
+ }
+ const fountain=new THREE.Mesh(new THREE.CylinderGeometry(3.2,3.5,0.6,24),mat(0xb0b8c0,0.4));
+ fountain.position.set(0,0.35,0);fountain.castShadow=true;scene.add(fountain);
+ const water=new THREE.Mesh(new THREE.CylinderGeometry(2.6,2.6,0.15,24),new THREE.MeshStandardMaterial({color:0x4a90c8,roughness:0.15,metalness:0.3,transparent:true,opacity:0.75}));
+ water.position.set(0,0.7,0);scene.add(water);
+
+ // Yodgorlik
  const stone=new THREE.MeshStandardMaterial({color:0xb9b6ac,roughness:0.75,envMapIntensity:0.4});
- const mon1=new THREE.Mesh(new THREE.BoxGeometry(5,0.8,5),stone);mon1.position.set(0,0.48,0);
- const mon2=new THREE.Mesh(new THREE.BoxGeometry(3.4,0.8,3.4),stone);mon2.position.set(0,1.28,0);
- const obel=new THREE.Mesh(new THREE.CylinderGeometry(0.5,1.1,12,8),stone);obel.position.set(0,7.7,0);
- const gold=new THREE.Mesh(new THREE.SphereGeometry(0.9,16,12),new THREE.MeshStandardMaterial({color:0xd8b04a,roughness:0.3,metalness:0.4,emissive:0x3a2a08,envMapIntensity:1}));
- gold.position.set(0,14.1,0);
+ const mon1=new THREE.Mesh(new THREE.BoxGeometry(6,0.9,6),stone);mon1.position.set(0,0.5,0);
+ const mon2=new THREE.Mesh(new THREE.BoxGeometry(4,0.9,4),stone);mon2.position.set(0,1.4,0);
+ const obel=new THREE.Mesh(new THREE.CylinderGeometry(0.55,1.2,14,8),stone);obel.position.set(0,8.5,0);
+ const gold=new THREE.Mesh(new THREE.SphereGeometry(1.0,16,12),new THREE.MeshStandardMaterial({color:0xd8b04a,roughness:0.3,metalness:0.4,emissive:0x3a2a08,envMapIntensity:1}));
+ gold.position.set(0,16,0);
  [mon1,mon2,obel,gold].forEach(function(m){m.castShadow=true;m.receiveShadow=true;scene.add(m);});
 
- // --- binolar
+ // Binolar
  const STYLES=[
   {wall:'#cbbfa6',frame:'#5a5f63',ga:'#7194ab',gb:'#35536a'},
   {curtain:1,wall:'#46688a',frame:'#2b3f55',ga:'#86bad8',gb:'#2f5575'},
   {brick:1,wall:'#a65b40',frame:'#eee7d6',ga:'#587482',gb:'#2f4653'},
   {wall:'#8f959b',frame:'#272c31',ga:'#93acbd',gb:'#3f566a'},
-  {wall:'#d4c08f',frame:'#6a5a45',ga:'#7d9cae',gb:'#3a566a'}
+  {wall:'#d4c08f',frame:'#6a5a45',ga:'#7d9cae',gb:'#3a566a'},
+  {curtain:1,wall:'#2c3e50',frame:'#1a252f',ga:'#5dade2',gb:'#1a5276'}
  ];
  const facadeMats=STYLES.map(function(st){
   const t=canvasTex(TEXS,function(g,s){drawFacade(g,s,st);});
@@ -960,7 +1054,7 @@ function buildWorld(){
  const doorMat=new THREE.MeshStandardMaterial({color:0x1b2a35,roughness:0.12,metalness:0.3,envMapIntensity:1});
  const awnMats=[0xb03a2e,0x1f618d,0x239b56,0x6c3483].map(function(c){return new THREE.MeshStandardMaterial({color:c,roughness:0.8});});
  const acMat=new THREE.MeshStandardMaterial({color:0x9aa1a6,roughness:0.6,metalness:0.1});
- const PT=0.08;   // plita qalinligi
+ const PT=0.08;
  function add(geo,m,x,y,z,cast){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.castShadow=cast!==false;o.receiveShadow=true;scene.add(o);return o;}
 
  W.boxes.forEach(function(b){
@@ -975,156 +1069,283 @@ function buildWorld(){
   const fm=facadeMats[style%facadeMats.length];
   const body=new THREE.Mesh(geo,[fm,fm,roofMat,roofMat,fm,fm]);
   body.position.set(x,h/2+PT,z);body.castShadow=true;body.receiveShadow=true;scene.add(body);
-  add(new THREE.BoxGeometry(w+0.5,0.5,d+0.5),trimMat,x,h+PT+0.25,z);
-  add(new THREE.BoxGeometry(w+0.2,0.9,d+0.2),trimMat,x,PT+0.45,z);
-  for(let k=0;k<3;k++){
-   const ax=(rnd()-0.5)*(w-5),az=(rnd()-0.5)*(d-5);
-   add(new THREE.BoxGeometry(1.6+rnd()*1.4,1.0+rnd()*0.8,1.6+rnd()*1.2),acMat,x+ax,h+PT+0.5+0.6,z+az);
+  add(new THREE.BoxGeometry(w+0.6,0.55,d+0.6),trimMat,x,h+PT+0.28,z);
+  add(new THREE.BoxGeometry(w+0.25,1.0,d+0.25),trimMat,x,PT+0.5,z);
+  for(let k=0;k<4;k++){
+   const ax=(rnd()-0.5)*(w-6),az=(rnd()-0.5)*(d-6);
+   add(new THREE.BoxGeometry(1.7+rnd()*1.5,1.1+rnd()*0.9,1.7+rnd()*1.3),acMat,x+ax,h+PT+0.6,z+az);
   }
-  const dx=(rnd()-0.5)*(w-8);
-  add(new THREE.BoxGeometry(3.4,2.8,0.2),doorMat,x+dx,PT+1.4,z+d/2+0.1,false);
-  add(new THREE.BoxGeometry(4.6,0.18,1.3),awnMats[(rnd()*awnMats.length)|0],x+dx,PT+3.2,z+d/2+0.65);
+  const dx=(rnd()-0.5)*(w-10);
+  add(new THREE.BoxGeometry(3.8,3.0,0.22),doorMat,x+dx,PT+1.55,z+d/2+0.12,false);
+  add(new THREE.BoxGeometry(5.0,0.2,1.4),awnMats[(rnd()*awnMats.length)|0],x+dx,PT+3.5,z+d/2+0.7);
   colliders.push([x,z,w/2,d/2,h]);
  });
- colliders.push([W.monument[0],W.monument[1],W.monument[2],W.monument[3],14]);
+ colliders.push([W.monument[0],W.monument[1],W.monument[2],W.monument[3],16]);
 
- // --- batafsil, boshqariladigan avtomobillar
+ // Sport / Lambo uslubidagi mashinalar
  const cars=W.cars; vehicles=[];
- const carPaint=[0xf2f2f2,0x17191d,0xb9bec4,0xb3261e,0x1f4f8f,0x687078,0x1e5a3a,0xc8b98a];
- const glassMat=new THREE.MeshPhysicalMaterial({color:0x182c3b,roughness:0.12,metalness:0.25,transparent:true,opacity:0.78,clearcoat:1});
- const rubberMat=new THREE.MeshStandardMaterial({color:0x101215,roughness:0.96});
- const alloyMat=new THREE.MeshStandardMaterial({color:0x9da6ad,roughness:0.28,metalness:0.85});
- const lampMat=new THREE.MeshStandardMaterial({color:0xfff1c7,emissive:0xffd77a,emissiveIntensity:1.6,roughness:0.2});
- const tailMat=new THREE.MeshStandardMaterial({color:0x9d1717,emissive:0x6e0808,emissiveIntensity:0.8});
+ const carPaint=[0xf2f2f2,0x0a0a0c,0xc0c5cc,0xc41e1a,0x1a4f9c,0x5a6570,0x1a6b3c,0xd4c08a,0xff6b00,0x7b2cbf];
+ const glassMat=new THREE.MeshPhysicalMaterial({color:0x0a1822,roughness:0.08,metalness:0.3,transparent:true,opacity:0.72,clearcoat:1});
+ const rubberMat=new THREE.MeshStandardMaterial({color:0x0c0e10,roughness:0.96});
+ const alloyMat=new THREE.MeshStandardMaterial({color:0xb0b8c0,roughness:0.22,metalness:0.9});
+ const lampMat=new THREE.MeshStandardMaterial({color:0xfff5e0,emissive:0xffe0a0,emissiveIntensity:1.8,roughness:0.15});
+ const tailMat=new THREE.MeshStandardMaterial({color:0xaa1010,emissive:0x880808,emissiveIntensity:1.0});
  function box(parent,geo,material,x,y,z){const o=new THREE.Mesh(geo,material);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;parent.add(o);return o;}
+
  cars.forEach(function(c,i){
   const root=new THREE.Group();root.position.set(c[0],0,c[1]);root.rotation.y=c[2]==='x'?Math.PI/2:0;scene.add(root);
-  const paint=new THREE.MeshStandardMaterial({color:carPaint[c[3]%carPaint.length],roughness:0.25,metalness:0.48,envMapIntensity:1.2});
-  box(root,new THREE.BoxGeometry(2.02,0.62,4.55),paint,0,0.72,0);
-  box(root,new THREE.BoxGeometry(1.82,0.58,2.35),paint,0,1.25,-0.18);
-  box(root,new THREE.BoxGeometry(1.72,0.44,2.12),glassMat,0,1.28,-0.18);
-  // old va old oynalar, ustunlar
-  [-0.82,0.82].forEach(x=>box(root,new THREE.BoxGeometry(0.07,0.55,2.2),paint,x,1.28,-0.18));
-  box(root,new THREE.BoxGeometry(1.65,0.07,0.08),paint,0,1.56,0.88);
-  box(root,new THREE.BoxGeometry(1.65,0.07,0.08),paint,0,1.56,-1.22);
-  // salon: o'rindiqlar va panel
-  [-0.48,0.48].forEach(x=>{box(root,new THREE.BoxGeometry(0.62,0.22,0.62),mat(0x292e33,0.85),x,1.02,0.48);box(root,new THREE.BoxGeometry(0.62,0.65,0.16),mat(0x343a40,0.85),x,1.35,0.72);});
-  box(root,new THREE.BoxGeometry(1.55,0.16,0.28),mat(0x20272d,0.8),0,1.08,-0.95);
-  // bamper, faralar, stop chiroqlari
-  box(root,new THREE.BoxGeometry(1.92,0.2,0.16),mat(0x30363b,0.5),0,0.48,2.3);
-  box(root,new THREE.BoxGeometry(1.92,0.2,0.16),mat(0x30363b,0.5),0,0.48,-2.3);
-  [-0.68,0.68].forEach(x=>{box(root,new THREE.BoxGeometry(0.42,0.2,0.06),lampMat,x,0.84,2.29);box(root,new THREE.BoxGeometry(0.42,0.2,0.06),tailMat,x,0.84,-2.29);});
+  const isSport=c[3]>=7;
+  const paint=new THREE.MeshStandardMaterial({color:carPaint[c[3]%carPaint.length],roughness:isSport?0.18:0.28,metalness:isSport?0.55:0.42,envMapIntensity:1.3});
+  // Pastki korpus
+  box(root,new THREE.BoxGeometry(isSport?1.95:2.05,0.38,isSport?4.7:4.5),paint,0,0.55,0);
+  // Kapot + salon
+  box(root,new THREE.BoxGeometry(isSport?1.85:1.92,0.32,isSport?2.1:2.0),paint,0,0.95,isSport?0.35:0.2);
+  // Kabina
+  box(root,new THREE.BoxGeometry(1.72,0.52,isSport?2.0:2.15),paint,0,1.22,isSport?-0.35:-0.15);
+  box(root,new THREE.BoxGeometry(1.62,0.42,isSport?1.85:2.0),glassMat,0,1.28,isSport?-0.35:-0.15);
+  // Sport uchun past profil va spoilers
+  if(isSport){
+   box(root,new THREE.BoxGeometry(1.7,0.08,0.45),paint,0,1.55,-2.0);
+   box(root,new THREE.BoxGeometry(0.12,0.25,0.35),paint,-0.75,1.65,-2.05);
+   box(root,new THREE.BoxGeometry(0.12,0.25,0.35),paint,0.75,1.65,-2.05);
+  }
+  // O'rindiqlar
+  [-0.42,0.42].forEach(x=>{box(root,new THREE.BoxGeometry(0.55,0.18,0.55),mat(0x1a1e24,0.85),x,0.95,0.35);box(root,new THREE.BoxGeometry(0.55,0.55,0.14),mat(0x222830,0.85),x,1.25,0.58);});
+  // Bamper va chiroqlar
+  box(root,new THREE.BoxGeometry(1.88,0.18,0.14),mat(0x222830,0.5),0,0.42,2.35);
+  box(root,new THREE.BoxGeometry(1.88,0.18,0.14),mat(0x222830,0.5),0,0.42,-2.35);
+  [-0.62,0.62].forEach(x=>{box(root,new THREE.BoxGeometry(0.38,0.16,0.05),lampMat,x,0.72,2.34);box(root,new THREE.BoxGeometry(0.38,0.16,0.05),tailMat,x,0.72,-2.34);});
+  // G'ildiraklar
   const wheels=[];
-  [-0.98,0.98].forEach(x=>[-1.48,1.48].forEach(z=>{const w=new THREE.Group();w.position.set(x,0.38,z);root.add(w);const tire=box(w,new THREE.CylinderGeometry(0.39,0.39,0.25,20),rubberMat,0,0,0);tire.rotation.z=Math.PI/2;const rim=box(w,new THREE.CylinderGeometry(0.22,0.22,0.27,16),alloyMat,0,0,0);rim.rotation.z=Math.PI/2;wheels.push(w);}));
-  const steering=new THREE.Mesh(new THREE.TorusGeometry(0.19,0.035,8,20),alloyMat);steering.position.set(-0.48,1.32,0.38);steering.rotation.y=Math.PI/2;root.add(steering);
-  root.userData={id:i,baseX:c[0],baseZ:c[1],speed:0,steer:0,steering,wheels,paint};
+  const wheelZ=isSport?[-1.55,1.5]:[-1.48,1.48];
+  [-0.95,0.95].forEach(x=>wheelZ.forEach(z=>{
+   const w=new THREE.Group();w.position.set(x,0.36,z);root.add(w);
+   const tire=box(w,new THREE.CylinderGeometry(isSport?0.36:0.38,isSport?0.36:0.38,0.24,18),rubberMat,0,0,0);tire.rotation.z=Math.PI/2;
+   const rim=box(w,new THREE.CylinderGeometry(0.20,0.20,0.26,14),alloyMat,0,0,0);rim.rotation.z=Math.PI/2;
+   wheels.push(w);
+  }));
+  const steering=new THREE.Mesh(new THREE.TorusGeometry(0.17,0.03,8,18),alloyMat);steering.position.set(-0.42,1.22,0.42);steering.rotation.y=Math.PI/2;root.add(steering);
+  root.userData={id:i,baseX:c[0],baseZ:c[1],speed:0,steer:0,steering,wheels,paint,sport:isSport};
   vehicles.push(root);
-  if(c[2]==='x')colliders.push([c[0],c[1],2.35,1.05,1.7]);else colliders.push([c[0],c[1],1.05,2.35,1.7]);
+  if(c[2]==='x')colliders.push([c[0],c[1],2.4,1.1,1.6]);else colliders.push([c[0],c[1],1.1,2.4,1.6]);
  });
- // Uylar, avtomobillar va interyerlar uchun interaktiv tizim
- let interactionText=''; // activeCar va uy holati yuqoridagi umumiy scope'dan boshqariladi
- const hint=document.createElement('div');hint.id='interactHint';hint.style.cssText='position:fixed;left:50%;bottom:82px;transform:translateX(-50%);z-index:30;padding:11px 17px;border:1px solid #ffffff35;border-radius:12px;background:#101a22e8;color:white;font:700 13px system-ui;display:none;text-align:center;pointer-events:none;white-space:pre-line';document.body.appendChild(hint);
- function buildApartment(){
+
+ // Kon zonasi belgilari + zombilar
+ if(W.mine){
+  const mx=W.mine[0],mz=W.mine[1],mr=W.mine[2];
+  const mineGround=new THREE.Mesh(new THREE.CircleGeometry(mr,32),new THREE.MeshStandardMaterial({color:0x3a3228,roughness:1}));
+  mineGround.rotation.x=-Math.PI/2;mineGround.position.set(mx,0.03,mz);scene.add(mineGround);
+  // Kon eshigi / belgi
+  const gate=new THREE.Mesh(new THREE.BoxGeometry(8,5,1.5),mat(0x4a4035,0.8));
+  gate.position.set(mx-mr+4,2.5,mz);scene.add(gate);
+  const sign=new THREE.Mesh(new THREE.BoxGeometry(3,1.2,0.15),mat(0x8b2500,0.6));
+  sign.position.set(mx-mr+4,4.2,mz+0.9);scene.add(sign);
+  mineMarker={x:mx,z:mz,r:mr};
+
+  // Zombilar
+  const zskin=mat(0x6b8f5a,0.9);
+  const zshirt=mat(0x3a2a1a,0.95);
+  for(let i=0;i<18;i++){
+   const g=new THREE.Group();
+   const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.7,4,8),zshirt);body.position.y=1.05;g.add(body);
+   const head=new THREE.Mesh(new THREE.SphereGeometry(0.24,10,8),zskin);head.position.y=1.72;g.add(head);
+   const eyeL=new THREE.Mesh(new THREE.SphereGeometry(0.04,6,6),mat(0xaa2222,0.3));eyeL.position.set(-0.08,1.75,0.2);g.add(eyeL);
+   const eyeR=new THREE.Mesh(new THREE.SphereGeometry(0.04,6,6),mat(0xaa2222,0.3));eyeR.position.set(0.08,1.75,0.2);g.add(eyeR);
+   const legL=new THREE.Mesh(new THREE.CapsuleGeometry(0.1,0.45,3,6),mat(0x2a2a22,0.95));legL.position.set(-0.12,0.4,0);g.add(legL);
+   const legR=new THREE.Mesh(new THREE.CapsuleGeometry(0.1,0.45,3,6),mat(0x2a2a22,0.95));legR.position.set(0.12,0.4,0);g.add(legR);
+   const ang=Math.random()*TAU,rad=5+Math.random()*(mr-6);
+   g.position.set(mx+Math.cos(ang)*rad,0,mz+Math.sin(ang)*rad);
+   g.traverse(o=>{if(o.isMesh){o.castShadow=true;}});
+   scene.add(g);
+   zombies.push({group:g,hp:60+Math.random()*40,speed:1.8+Math.random()*1.2,legL,legR,phase:Math.random()*TAU,dead:false,attackCd:0});
+  }
+ }
+
+ // Interaktiv hint
+ const hint=document.createElement('div');hint.id='interactHint';hint.style.cssText='position:fixed;left:50%;bottom:95px;transform:translateX(-50%);z-index:30;padding:11px 17px;border:1px solid #ffffff35;border-radius:12px;background:#101a22e8;color:white;font:700 13px system-ui;display:none;text-align:center;pointer-events:none;white-space:pre-line';document.body.appendChild(hint);
+
+ function buildApartment(quality){
   if(homeGroup){scene.remove(homeGroup);homeGroup=null;}
-  const g=new THREE.Group();g.position.set(0,-35,0);scene.add(g);homeGroup=g;
-  const floor=mat(0x9b8871,0.82),wall=mat(0xe5dfd3,0.92),dark=mat(0x383b40,0.75),wood=mat(0x795238,0.55),fabric=mat(0x536f7d,0.96),cream=mat(0xc9b89d,0.9),metal=mat(0x9ba2a6,0.3);
-  box(g,new THREE.BoxGeometry(18,0.25,16),floor,0,-0.15,0);
-  box(g,new THREE.BoxGeometry(18,5,0.25),wall,0,2.35,-8);
-  box(g,new THREE.BoxGeometry(0.25,5,16),wall,-9,2.35,0);
-  box(g,new THREE.BoxGeometry(0.25,5,16),wall,9,2.35,0);
-  // orqa devor va katta deraza
-  box(g,new THREE.BoxGeometry(5,5,0.25),wall,-6.5,2.35,8);
-  box(g,new THREE.BoxGeometry(5,5,0.25),wall,6.5,2.35,8);
-  box(g,new THREE.BoxGeometry(8,1.2,0.25),wall,0,4.25,8);
+  const g=new THREE.Group();g.position.set(0,-40,0);scene.add(g);homeGroup=g;
+  const floorC=quality>0.5?0x9b8871:0x6a5a4a;
+  const wallC=quality>0.5?0xe5dfd3:0xc8c0b0;
+  const floor=mat(floorC,0.82),wall=mat(wallC,0.92),dark=mat(0x383b40,0.75),wood=mat(0x795238,0.55),fabric=mat(quality>0.5?0x536f7d:0x4a3a2a,0.96),cream=mat(0xc9b89d,0.9),metal=mat(0x9ba2a6,0.3);
+  function abox(geo,m,x,y,z){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;g.add(o);return o;}
+  abox(new THREE.BoxGeometry(20,0.25,18),floor,0,-0.15,0);
+  abox(new THREE.BoxGeometry(20,5.2,0.25),wall,0,2.4,-9);
+  abox(new THREE.BoxGeometry(0.25,5.2,18),wall,-10,2.4,0);
+  abox(new THREE.BoxGeometry(0.25,5.2,18),wall,10,2.4,0);
+  abox(new THREE.BoxGeometry(6,5.2,0.25),wall,-7,2.4,9);
+  abox(new THREE.BoxGeometry(6,5.2,0.25),wall,7,2.4,9);
+  abox(new THREE.BoxGeometry(8,1.3,0.25),wall,0,4.4,9);
   const windowGlass=new THREE.MeshPhysicalMaterial({color:0x75a8c4,roughness:0.12,metalness:0.12,transparent:true,opacity:0.42});
-  box(g,new THREE.BoxGeometry(7.8,2.8,0.08),windowGlass,0,2.25,7.86);
-  // divan va yostiqlar
-  box(g,new THREE.BoxGeometry(4.8,0.55,1.25),fabric,-4,0.35,1.7);
-  box(g,new THREE.BoxGeometry(4.8,1.25,0.35),fabric,-4,0.95,2.2);
-  [-5.65,-4,-2.35].forEach(x=>box(g,new THREE.BoxGeometry(1.35,0.22,0.9),cream,x,0.83,1.55));
-  // kofe stoli va gilam
-  box(g,new THREE.BoxGeometry(4.3,0.08,2.6),cream,-3.4,0.015,-1.2);
-  box(g,new THREE.BoxGeometry(2.1,0.22,1.1),wood,-3.4,0.48,-1.2);
-  [-4.2,-2.6].forEach(x=>[-1.55,-0.85].forEach(z=>box(g,new THREE.CylinderGeometry(0.045,0.045,0.42,8),dark,x,0.22,z)));
-  // televizor va tumba
-  box(g,new THREE.BoxGeometry(3.2,0.65,0.55),wood,5.7,0.42,-4.5);
-  box(g,new THREE.BoxGeometry(2.8,1.65,0.12),dark,5.7,1.65,-4.75);
-  box(g,new THREE.BoxGeometry(2.65,1.48,0.04),new THREE.MeshBasicMaterial({color:0x152d42}),5.7,1.65,-4.66);
-  // ovqatlanish stoli va stullar
-  box(g,new THREE.BoxGeometry(2.7,0.14,1.6),wood,4,0.95,2.4);
-  [-1,1].forEach(a=>[-1,1].forEach(b=>{box(g,new THREE.BoxGeometry(0.75,0.12,0.72),cream,4+a*1.8,0.55,2.4+b*1.35);box(g,new THREE.BoxGeometry(0.75,0.85,0.12),wood,4+a*1.8,0.98,2.4+b*1.35);}));
-  // oshxona shkaflari
-  box(g,new THREE.BoxGeometry(5.2,0.9,0.8),wood,-5.8,0.48,-5.9);
-  box(g,new THREE.BoxGeometry(5.2,0.12,0.9),metal,-5.8,1.0,-5.9);
-  for(let i=0;i<4;i++)box(g,new THREE.BoxGeometry(1.15,1.0,0.45),cream,-7.7+i*1.28,1.85,-7.2);
-  // yotoq burchagi
-  box(g,new THREE.BoxGeometry(3.6,0.42,4.0),wood,5.5,0.3,5.1);
-  box(g,new THREE.BoxGeometry(3.45,0.28,3.8),cream,5.5,0.64,5.0);
-  [-0.85,0.85].forEach(x=>box(g,new THREE.BoxGeometry(1.1,0.18,0.7),wall,5.5+x,0.9,6.35));
-  // xona yoritgichi
-  const light=new THREE.PointLight(0xffe5bd,1.4,24);light.position.set(0,4.2,0);g.add(light);
-  // lift kabinasi, eshik va tugmalar
-  box(g,new THREE.BoxGeometry(2.8,4.5,2.8),dark,7.0,2.1,-0.2);
-  box(g,new THREE.BoxGeometry(1.15,3.5,0.12),metal,6.35,1.85,1.25);
-  box(g,new THREE.BoxGeometry(1.15,3.5,0.12),metal,7.65,1.85,1.25);
-  box(g,new THREE.BoxGeometry(0.28,1.5,0.12),mat(0x25292d,0.4),8.65,1.5,0.2);
-  for(let i=0;i<10;i++)box(g,new THREE.BoxGeometry(0.12,0.12,0.08),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c}),8.65,2.05-i*0.18,0.13);
-  g.userData.elevatorY=0;
+  abox(new THREE.BoxGeometry(7.8,3.0,0.08),windowGlass,0,2.3,8.86);
+  // Divan
+  abox(new THREE.BoxGeometry(5.2,0.55,1.35),fabric,-4.5,0.35,2.0);
+  abox(new THREE.BoxGeometry(5.2,1.25,0.35),fabric,-4.5,0.95,2.55);
+  [-6.2,-4.5,-2.8].forEach(x=>abox(new THREE.BoxGeometry(1.4,0.22,0.95),cream,x,0.83,1.85));
+  // Stol
+  abox(new THREE.BoxGeometry(4.5,0.08,2.8),cream,-3.8,0.015,-1.5);
+  abox(new THREE.BoxGeometry(2.2,0.22,1.15),wood,-3.8,0.48,-1.5);
+  // TV
+  abox(new THREE.BoxGeometry(3.4,0.7,0.55),wood,6.0,0.42,-5.0);
+  abox(new THREE.BoxGeometry(3.0,1.75,0.12),dark,6.0,1.7,-5.25);
+  const tvScreen=abox(new THREE.BoxGeometry(2.85,1.55,0.04),new THREE.MeshBasicMaterial({color:0x1a3a55}),6.0,1.7,-5.15);
+  // Ovqatlanish
+  abox(new THREE.BoxGeometry(2.9,0.14,1.7),wood,4.5,0.95,2.8);
+  [-1,1].forEach(a=>[-1,1].forEach(b=>{abox(new THREE.BoxGeometry(0.78,0.12,0.75),cream,4.5+a*1.9,0.55,2.8+b*1.4);abox(new THREE.BoxGeometry(0.78,0.85,0.12),wood,4.5+a*1.9,0.98,2.8+b*1.4);}));
+  // Oshxona
+  abox(new THREE.BoxGeometry(5.5,0.9,0.85),wood,-6.2,0.48,-6.5);
+  abox(new THREE.BoxGeometry(5.5,0.12,0.95),metal,-6.2,1.0,-6.5);
+  for(let i=0;i<4;i++)abox(new THREE.BoxGeometry(1.2,1.05,0.48),cream,-8.2+i*1.35,1.9,-7.9);
+  // Yotoqxona
+  abox(new THREE.BoxGeometry(3.8,0.42,4.2),wood,6.0,0.3,5.5);
+  abox(new THREE.BoxGeometry(3.65,0.28,4.0),cream,6.0,0.64,5.4);
+  [-0.9,0.9].forEach(x=>abox(new THREE.BoxGeometry(1.15,0.18,0.72),wall,6.0+x,0.9,6.8));
+  // Lift
+  abox(new THREE.BoxGeometry(3.0,4.8,3.0),dark,7.5,2.2,-0.5);
+  abox(new THREE.BoxGeometry(1.2,3.6,0.12),metal,6.8,1.9,1.05);
+  abox(new THREE.BoxGeometry(1.2,3.6,0.12),metal,8.2,1.9,1.05);
+  abox(new THREE.BoxGeometry(0.3,1.6,0.12),mat(0x25292d,0.4),9.2,1.55,0.1);
+  for(let i=0;i<12;i++)abox(new THREE.BoxGeometry(0.12,0.12,0.08),new THREE.MeshStandardMaterial({color:0x39dca0,emissive:0x16865c}),9.2,2.15-i*0.16,0.05);
+  const light=new THREE.PointLight(0xffe5bd,1.5,28);light.position.set(0,4.4,0);g.add(light);
+  // TV animatsiya
+  g.userData.tv=tvScreen;
+  g.userData.tvT=0;
   return g;
  }
+
  function interact(){
-  if(insideHome){if(homeGroup){elevatorFloor=elevatorFloor%50+1;homeGroup.position.y=-35+(elevatorFloor-1)*3.1;toast('Lift: '+elevatorFloor+'-qavat / 50');}return;}
-  if(activeCar){const car=activeCar;activeCar=null;me.pos.set(car.position.x+Math.sin(car.rotation.y)*2.8,0,car.position.z+Math.cos(car.rotation.y)*2.8);me.rot=car.rotation.y;me.avatar.visible=true;toast('Avtomobildan tushdingiz');return;}
-  let nearest=null,dist=999;vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
-  if(nearest&&dist<4.5){activeCar=nearest;me.avatar.visible=false;me.pos.set(nearest.position.x,0,nearest.position.z);toast('Mashina boshqaruvi: W/S gaz-tormoz, A/D burilish, SPACE qo‘l tormozi, E tushish');return;}
-  const b=nearestBuilding();if(b&&b.dist<7){homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};insideHome=true;elevatorFloor=1;buildApartment();me.pos.set(0,-35,0);me.avatar.visible=false;toast('Xonadonga xush kelibsiz. E — 50 qavatli lift, F — chiqish');}
+  if(insideHome){
+   if(homeGroup){
+    elevatorFloor=elevatorFloor%50+1;
+    homeGroup.position.y=-40+(elevatorFloor-1)*3.2;
+    toast('Lift: '+elevatorFloor+'-qavat / 50');
+   }
+   return;
+  }
+  if(activeCar){
+   const car=activeCar;activeCar=null;
+   me.pos.set(car.position.x+Math.sin(car.rotation.y)*2.8,0,car.position.z+Math.cos(car.rotation.y)*2.8);
+   me.rot=car.rotation.y;me.avatar.visible=true;
+   toast('Avtomobildan tushdingiz');
+   return;
+  }
+  let nearest=null,dist=999;
+  vehicles.forEach(v=>{const d=Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z);if(d<dist){dist=d;nearest=v;}});
+  if(nearest&&dist<4.8){
+   activeCar=nearest;me.avatar.visible=false;me.pos.set(nearest.position.x,0,nearest.position.z);
+   toast('Mashina: W/S gaz-tormoz, A/D rul, SPACE tormoz, E tushish');
+   return;
+  }
+  // Kon
+  if(mineMarker){
+   const md=Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z);
+   if(md<mineMarker.r+2){
+    lifeAction('mine');
+    return;
+   }
+  }
+  const b=nearestBuilding();
+  if(b&&b.dist<8){
+   homeReturn={x:me.pos.x,y:me.pos.y,z:me.pos.z,rot:me.rot};
+   insideHome=true;elevatorFloor=1;
+   const quality=Math.random();
+   buildApartment(quality);
+   me.pos.set(0,-40,0);me.avatar.visible=false;
+   toast(quality>0.5?'Yaxshi xonadon. E — lift, F — chiqish, H — uxash':'Oddiy xonadon. E — lift, F — chiqish, H — uxash');
+  }
  }
- window.addEventListener('keydown',function(e){if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}if(e.code==='KeyF'&&insideHome){insideHome=false;if(homeGroup){scene.remove(homeGroup);homeGroup=null;}me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;toast('Binodan chiqdingiz');}});
- // --- daraxtlar va chiroqlar (instanced)
+
+ function doAttack(){
+  if(me.attackCd>0||insideHome)return;
+  me.attackCd=0.45;
+  const dmg=me.weapon&&WEAPON_DMG[me.weapon]?WEAPON_DMG[me.weapon]:8;
+  // Zombilarga
+  for(const z of zombies){
+   if(z.dead)continue;
+   const d=Math.hypot(z.group.position.x-me.pos.x,z.group.position.z-me.pos.z);
+   if(d<2.8){
+    z.hp-=dmg;
+    if(z.hp<=0){z.dead=true;z.group.visible=false;toast('Zombi yo\'q qilindi! +kon puli imkoniyati');}
+    else toast('Zombiga '+dmg+' zarar');
+    return;
+   }
+  }
+  // NPC larga
+  for(const n of cityNPCs){
+   if(n.hp<=0)continue;
+   const d=Math.hypot(n.group.position.x-me.pos.x,n.group.position.z-me.pos.z);
+   if(d<2.5){
+    n.hp-=dmg;
+    n.aggro=4.0;
+    if(n.hp<=0){n.group.visible=false;toast('Odam yiqildi...');lifeAction('crime');}
+    else toast('Odamga '+dmg+' zarar');
+    return;
+   }
+  }
+ }
+
+ window.addEventListener('keydown',function(e){
+  if(e.code==='KeyE'&&!typing()){interact();e.preventDefault();}
+  if(e.code==='KeyF'&&insideHome){
+   insideHome=false;
+   if(homeGroup){scene.remove(homeGroup);homeGroup=null;}
+   me.pos.set(homeReturn.x,homeReturn.y,homeReturn.z);me.rot=homeReturn.rot;me.avatar.visible=true;
+   toast('Binodan chiqdingiz');
+  }
+  if(e.code==='KeyF'&&!insideHome&&!typing()){doAttack();e.preventDefault();}
+  if(e.code==='KeyH'&&!typing()){
+   if(insideHome){lifeAction('sleep');toast('Uxlab dam oldingiz');}
+   else toast('Uyqu uchun xonadonga kiring (E)');
+  }
+ });
+
+ // Daraxtlar, chiroqlar
  const treePts=[],lampPts=[];
  W.blocks.forEach(function(cx){W.blocks.forEach(function(cz){
   if(cx===0&&cz===0){
-   for(let k=0;k<12;k++){const a=k/12*TAU;treePts.push([Math.cos(a)*11,Math.sin(a)*11]);}
+   for(let k=0;k<16;k++){const a=k/16*TAU;treePts.push([Math.cos(a)*13,Math.sin(a)*13]);}
    return;
   }
   [-1,1].forEach(function(s){[-1,1].forEach(function(t){
-   treePts.push([cx+s*12,cz+t*6]);treePts.push([cx+t*6,cz+s*12]);
-   lampPts.push([cx+s*12.5,cz+t*12.5]);
+   treePts.push([cx+s*14,cz+t*7]);treePts.push([cx+t*7,cz+s*14]);
+   lampPts.push([cx+s*14.5,cz+t*14.5]);
   });});
  });});
  const trng=lcg(4242);
- const trunkM=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.2,0.3,2.6,6),new THREE.MeshStandardMaterial({color:0x6a4a30,roughness:1}),treePts.length);
- const crownM=new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.8,1),new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.95,envMapIntensity:0.3}),treePts.length);
+ const trunkM=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22,0.32,2.8,6),new THREE.MeshStandardMaterial({color:0x6a4a30,roughness:1}),treePts.length);
+ const crownM=new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.9,1),new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.95,envMapIntensity:0.3}),treePts.length);
  [trunkM,crownM].forEach(function(m){m.frustumCulled=false;m.castShadow=true;m.receiveShadow=true;scene.add(m);});
  const greens=[0x2f7a3f,0x3b8a45,0x2a6c38,0x4a9a4c,0x35803f];
  const cc=new THREE.Color();
  treePts.forEach(function(p,i){
-  const sc=0.8+trng()*0.45;
-  dummy.position.set(p[0],PT+1.3,p[1]);dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);dummy.updateMatrix();trunkM.setMatrixAt(i,dummy.matrix);
-  dummy.position.set(p[0],PT+3.9*sc+0.2,p[1]);dummy.rotation.set(0,trng()*TAU,0);dummy.scale.set(sc,sc*1.1,sc);dummy.updateMatrix();crownM.setMatrixAt(i,dummy.matrix);
+  const sc=0.85+trng()*0.5;
+  dummy.position.set(p[0],PT+1.4,p[1]);dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);dummy.updateMatrix();trunkM.setMatrixAt(i,dummy.matrix);
+  dummy.position.set(p[0],PT+4.1*sc+0.2,p[1]);dummy.rotation.set(0,trng()*TAU,0);dummy.scale.set(sc,sc*1.15,sc);dummy.updateMatrix();crownM.setMatrixAt(i,dummy.matrix);
   crownM.setColorAt(i,cc.setHex(greens[(trng()*greens.length)|0]));
  });
  crownM.instanceColor.needsUpdate=true;
- const poleM=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09,0.12,6.2,6),new THREE.MeshStandardMaterial({color:0x30363b,roughness:0.6,metalness:0.3}),lampPts.length);
- const headM=new THREE.InstancedMesh(new THREE.SphereGeometry(0.32,10,8),new THREE.MeshStandardMaterial({color:0xfff4d0,emissive:0xffe9a0,emissiveIntensity:0.7}),lampPts.length);
+ const poleM=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09,0.12,6.5,6),new THREE.MeshStandardMaterial({color:0x30363b,roughness:0.6,metalness:0.3}),lampPts.length);
+ const headM=new THREE.InstancedMesh(new THREE.SphereGeometry(0.34,10,8),new THREE.MeshStandardMaterial({color:0xfff4d0,emissive:0xffe9a0,emissiveIntensity:0.8}),lampPts.length);
  [poleM,headM].forEach(function(m){m.frustumCulled=false;m.castShadow=true;scene.add(m);});
  lampPts.forEach(function(p,i){
-  dummy.position.set(p[0],PT+3.1,p[1]);dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);dummy.updateMatrix();poleM.setMatrixAt(i,dummy.matrix);
-  dummy.position.set(p[0],PT+6.3,p[1]);dummy.updateMatrix();headM.setMatrixAt(i,dummy.matrix);
+  dummy.position.set(p[0],PT+3.2,p[1]);dummy.rotation.set(0,0,0);dummy.scale.set(1,1,1);dummy.updateMatrix();poleM.setMatrixAt(i,dummy.matrix);
+  dummy.position.set(p[0],PT+6.5,p[1]);dummy.updateMatrix();headM.setMatrixAt(i,dummy.matrix);
  });
 
- // --- uzoq shahar siluети
+ // Uzoq shahar
  const frng=lcg(777);
  const farGeo=new THREE.BoxGeometry(1,1,1);
- const farM=new THREE.InstancedMesh(farGeo,new THREE.MeshLambertMaterial({color:0x9db0c0}),70);
+ const farM=new THREE.InstancedMesh(farGeo,new THREE.MeshLambertMaterial({color:0x9db0c0}),90);
  farM.frustumCulled=false;
- for(let i=0;i<70;i++){
-  const a=i/70*TAU+frng()*0.05,r=200+frng()*50,w=16+frng()*18,h=22+frng()*70;
+ for(let i=0;i<90;i++){
+  const a=i/90*TAU+frng()*0.05,r=240+frng()*70,w=18+frng()*22,h=28+frng()*90;
   dummy.position.set(Math.cos(a)*r,h/2,Math.sin(a)*r);dummy.rotation.set(0,frng()*TAU,0);dummy.scale.set(w,h,w);dummy.updateMatrix();farM.setMatrixAt(i,dummy.matrix);
  }
  farCity=farM;scene.add(farCity);
 
- // --- bulutlar
+ // Bulutlar
  const cloudTex=canvasTex(128,function(g,s){
   const gr=g.createRadialGradient(s/2,s/2,2,s/2,s/2,s/2);
   gr.addColorStop(0,'rgba(255,255,255,0.95)');gr.addColorStop(0.5,'rgba(255,255,255,0.45)');gr.addColorStop(1,'rgba(255,255,255,0)');
@@ -1133,63 +1354,105 @@ function buildWorld(){
  cloudTex.wrapS=cloudTex.wrapT=THREE.ClampToEdgeWrapping;
  cloudGroup=new THREE.Group();
  const crng=lcg(31337);
- for(let i=0;i<22;i++){
+ for(let i=0;i<28;i++){
   const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:cloudTex,transparent:true,opacity:0.8,depthWrite:false,fog:false}));
-  const a=crng()*TAU,r=240+crng()*140;
-  sp.position.set(Math.cos(a)*r,70+crng()*60,Math.sin(a)*r);
-  sp.scale.set(120+crng()*110,36+crng()*26,1);
+  const a=crng()*TAU,r=280+crng()*160;
+  sp.position.set(Math.cos(a)*r,80+crng()*70,Math.sin(a)*r);
+  sp.scale.set(130+crng()*120,40+crng()*30,1);
   cloudGroup.add(sp);
  }
  scene.add(cloudGroup);
 }
 
-
-// ======================= SHAHAR AHOLISI (NPC) =======================
+// NPC — boy va kambag'al
 let cityNPCs=[];
+const WEAPON_DMG={bat:18,knife:25,pistol:40,shotgun:70,rifle:55,black_pistol:48,black_rifle:65,fist:8};
+
 function buildCityPopulation(){
- const rng=lcg(918273), clothes=[0x168b78,0x315c9a,0x8a4b32,0x4d5661,0x9a7b36,0x743f73,0xb5b9bf,0x253c32];
- const skin=[0xc58f68,0xe0ad83,0x9a674c,0xd6a17b];
- const hair=[0x171717,0x463126,0x77716a,0x1f2933];
+ const rng=lcg(918273);
+ const clothes=[0x168b78,0x315c9a,0x8a4b32,0x4d5661,0x9a7b36,0x743f73,0xb5b9bf,0x253c32,0xc0392b,0xf1c40f,0x1abc9c,0x8e44ad];
+ const skin=[0xc58f68,0xe0ad83,0x9a674c,0xd6a17b,0x8d5524];
+ const hair=[0x171717,0x463126,0x77716a,0x1f2933,0xd4a017];
  const geo={body:new THREE.CapsuleGeometry(0.29,0.72,4,8),head:new THREE.SphereGeometry(0.22,12,10),leg:new THREE.CapsuleGeometry(0.105,0.48,3,7),arm:new THREE.CapsuleGeometry(0.085,0.48,3,7)};
  cityNPCs=[];
- for(let i=0;i<64;i++){
+ for(let i=0;i<110;i++){
   const g=new THREE.Group();
-  const shirt=new THREE.MeshStandardMaterial({color:clothes[(rng()*clothes.length)|0],roughness:0.88});
+  const wealth=rng()<0.07?'boy':(rng()<0.4?'kambagal':'oddiy');
+  const shirtC=wealth==='boy'?[0xd4af37,0x1a1a2e,0xffffff][(rng()*3)|0]:clothes[(rng()*clothes.length)|0];
+  const shirt=new THREE.MeshStandardMaterial({color:shirtC,roughness:0.88});
   const skinMat=new THREE.MeshStandardMaterial({color:skin[(rng()*skin.length)|0],roughness:0.9});
   const hairMat=new THREE.MeshStandardMaterial({color:hair[(rng()*hair.length)|0],roughness:1});
   const body=new THREE.Mesh(geo.body,shirt);body.position.y=1.08;g.add(body);
   const head=new THREE.Mesh(geo.head,skinMat);head.position.y=1.78;g.add(head);
   const hairCap=new THREE.Mesh(new THREE.SphereGeometry(0.225,12,8,0,Math.PI*2,0,Math.PI*0.55),hairMat);hairCap.position.y=1.86;g.add(hairCap);
   const legs=[];
-  for(const x of [-0.13,0.13]){const leg=new THREE.Mesh(geo.leg,new THREE.MeshStandardMaterial({color:0x252a30,roughness:0.95}));leg.position.set(x,0.42,0);g.add(leg);legs.push(leg);}
+  for(const x of [-0.13,0.13]){const leg=new THREE.Mesh(geo.leg,new THREE.MeshStandardMaterial({color:wealth==='boy'?0x1a1a1a:0x252a30,roughness:0.95}));leg.position.set(x,0.42,0);g.add(leg);legs.push(leg);}
   const arms=[];
   for(const x of [-0.34,0.34]){const arm=new THREE.Mesh(geo.arm,shirt);arm.position.set(x,1.12,0);arm.rotation.z=x<0?-0.12:0.12;g.add(arm);arms.push(arm);}
-  const homeSide=(rng()*4)|0, lane=homeSide===0?[-150,150]:homeSide===1?[-150,150]:[-150,150];
   let x,z;
-  if(i%4===0){x=(rng()*2-1)*145;z=(rng()*2-1)*145;}else{
-   const road= W.roads[2+((rng()*5)|0)];
-   if(rng()<0.5){x=(rng()*2-1)*145;z=road+(rng()<0.5?-1:1)*8.2;}
-   else{x=road+(rng()<0.5?-1:1)*8.2;z=(rng()*2-1)*145;}
+  if(i%5===0){x=(rng()*2-1)*180;z=(rng()*2-1)*180;}
+  else{
+   const road=W.roads[1+((rng()*(W.roads.length-2))|0)];
+   if(rng()<0.5){x=(rng()*2-1)*180;z=road+(rng()<0.5?-1:1)*9;}
+   else{x=road+(rng()<0.5?-1:1)*9;z=(rng()*2-1)*180;}
   }
   g.position.set(x,0,z);g.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});scene.add(g);
-  const a=rng()*TAU,speed=0.65+rng()*0.65;
-  cityNPCs.push({group:g,legs,arms,tx:x+Math.cos(a)*8,tz:z+Math.sin(a)*8,speed,phase:rng()*TAU,wait:rng()*4,wealth:rng()<0.08?'boy':(rng()<0.35?'kambag\'al':'oddiy')});
+  const a=rng()*TAU,speed=(wealth==='boy'?0.5:0.7)+rng()*0.7;
+  cityNPCs.push({group:g,legs,arms,tx:x+Math.cos(a)*10,tz:z+Math.sin(a)*10,speed,phase:rng()*TAU,wait:rng()*5,wealth,hp:100,aggro:0});
  }
 }
+
 function updateCityPopulation(dt,t){
  for(const n of cityNPCs){
+  if(n.hp<=0)continue;
   const g=n.group;
-  if(n.wait>0){n.wait-=dt;}else{
+  if(n.aggro>0){
+   n.aggro-=dt;
+   const dx=me.pos.x-g.position.x,dz=me.pos.z-g.position.z,d=Math.hypot(dx,dz)||1;
+   if(d<2.2&&n.aggro>0.1){
+    // Qayta urish
+    if(Math.random()<0.02){me.hp=Math.max(0,me.hp-6);updateHpBar();toast('Odam sizni urdi! -6 HP');}
+   }
+   if(d>1.5){g.position.x+=dx/d*n.speed*1.4*dt;g.position.z+=dz/d*n.speed*1.4*dt;g.rotation.y=Math.atan2(dx,dz);}
+  }else if(n.wait>0){n.wait-=dt;}
+  else{
    let dx=n.tx-g.position.x,dz=n.tz-g.position.z,d=Math.hypot(dx,dz);
-   if(d<1.5){n.wait=1.2+Math.random()*3;const a=Math.random()*TAU;n.tx=clamp(g.position.x+Math.cos(a)*(5+Math.random()*13),-155,155);n.tz=clamp(g.position.z+Math.sin(a)*(5+Math.random()*13),-155,155);}
+   if(d<1.5){n.wait=1.5+Math.random()*4;const a=Math.random()*TAU;n.tx=clamp(g.position.x+Math.cos(a)*(6+Math.random()*16),-190,190);n.tz=clamp(g.position.z+Math.sin(a)*(6+Math.random()*16),-190,190);}
    else{const step=Math.min(d,n.speed*dt);g.position.x+=dx/d*step;g.position.z+=dz/d*step;g.rotation.y=Math.atan2(dx,dz);}
   }
-  const walking=n.wait<=0, swing=walking?Math.sin(t*0.007*n.speed+n.phase)*0.48:0;
+  const walking=n.wait<=0||n.aggro>0,swing=walking?Math.sin(t*0.007*n.speed+n.phase)*0.48:0;
   n.legs[0].rotation.x=swing;n.legs[1].rotation.x=-swing;n.arms[0].rotation.x=-swing*0.65;n.arms[1].rotation.x=swing*0.65;
  }
 }
 
-// ======================= TO'QNASHUV =======================
+function updateZombies(dt,t){
+ if(!mineMarker)return;
+ for(const z of zombies){
+  if(z.dead)continue;
+  const g=z.group;
+  const dx=me.pos.x-g.position.x,dz=me.pos.z-g.position.z,d=Math.hypot(dx,dz)||1;
+  const inMine=Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z)<mineMarker.r+5;
+  if(inMine&&d<22){
+   g.position.x+=dx/d*z.speed*dt;g.position.z+=dz/d*z.speed*dt;
+   g.rotation.y=Math.atan2(dx,dz);
+   if(d<1.8){
+    z.attackCd-=dt;
+    if(z.attackCd<=0){z.attackCd=1.1;me.hp=Math.max(0,me.hp-12);updateHpBar();toast('Zombi hujumi! -12 HP');if(me.hp<=0){me.hp=20;me.pos.set(0,0,12);toast('Sizni olib ketishdi... Markazda uyg\'ondingiz');}}
+   }
+  }else{
+   // Aylana
+   const a=Math.atan2(g.position.z-mineMarker.z,g.position.x-mineMarker.x)+dt*0.3;
+   const r=8+((z.phase*7)%(mineMarker.r-10));
+   g.position.x=mineMarker.x+Math.cos(a)*r;
+   g.position.z=mineMarker.z+Math.sin(a)*r;
+   g.rotation.y=a+Math.PI/2;
+  }
+  const sw=Math.sin(t*0.01+z.phase)*0.5;
+  z.legL.rotation.x=sw;z.legR.rotation.x=-sw;
+ }
+}
+
+// To'qnashuv
 function resolveCollisions(pos,r){
  for(let pass=0;pass<2;pass++){
   for(let i=0;i<colliders.length;i++){
@@ -1219,7 +1482,7 @@ function camBlocked(x,y,z){
  return false;
 }
 
-// ======================= PERSONAJ =======================
+// Personaj
 const AG={};
 const SHIRTS=[0x2e86c1,0xc0392b,0x27ae60,0x8e44ad,0xd68910,0x17a589,0x34495e,0xe91e63,0x5d6d7e,0xf1c40f];
 const PANTS=[0x1f2a38,0x3b3f46,0x4a3b2a,0x2c3e50];
@@ -1289,7 +1552,7 @@ function disposeAvatar(av){
  if(s){if(s.material.map)s.material.map.dispose();s.material.dispose();}
 }
 
-// ======================= HOLAT =======================
+// Holat
 const keys={};
 const joy={id:-1,x:0,y:0,mag:0,ox:0,oy:0};
 const look={id:-1,x:0,y:0};
@@ -1298,8 +1561,8 @@ let camYaw=0,camPitch=0.32,camDistWant=8.5,camDist=8.5,camFov=68;
 let myId=null,myName='',names={},others={};
 let socket=null,online=false,wantConnect=false,retry=0,retryTimer=0,connTimer=0,pingTimer=0;
 
-// ======================= KIRISH (INPUT) =======================
-function typing(){const a=document.activeElement;return !!(a&&a.tagName==='INPUT'&&$('login').style.display!=='none');}
+// Input
+function typing(){const a=document.activeElement;return !!(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'));}
 window.addEventListener('keydown',function(e){
  if(typing())return;
  keys[e.code]=true;
@@ -1308,7 +1571,7 @@ window.addEventListener('keydown',function(e){
 window.addEventListener('keyup',function(e){keys[e.code]=false;});
 window.addEventListener('blur',function(){for(const k in keys)keys[k]=false;jumpHeld=false;});
 canvas.addEventListener('contextmenu',function(e){e.preventDefault();});
-canvas.addEventListener('wheel',function(e){e.preventDefault();camDistWant=clamp(camDistWant+e.deltaY*0.008,3,16);},{passive:false});
+canvas.addEventListener('wheel',function(e){e.preventDefault();camDistWant=clamp(camDistWant+e.deltaY*0.008,3,18);},{passive:false});
 
 function enableTouch(){if(!document.body.classList.contains('touch')){document.body.classList.add('touch');joyRest();}}
 if(touchPrimary)document.body.classList.add('touch');
@@ -1329,7 +1592,6 @@ const endLook=function(e){if(e.pointerId===look.id)look.id=-1;};
 canvas.addEventListener('pointerup',endLook);
 canvas.addEventListener('pointercancel',endLook);
 
-// virtual joystick
 const zone=$('joyzone'),jbase=$('joybase'),jknob=$('joyknob');
 function joyRest(){
  const r=zone.getBoundingClientRect(),s=jbase.offsetWidth||120;
@@ -1366,8 +1628,9 @@ $('btnJump').addEventListener('pointerup',jumpUp);
 $('btnJump').addEventListener('pointercancel',jumpUp);
 $('btnJump').addEventListener('pointerleave',jumpUp);
 $('btnRun').addEventListener('pointerdown',function(e){runToggle=!runToggle;this.classList.toggle('on',runToggle);e.preventDefault();});
+$('btnAct').addEventListener('pointerdown',function(e){interact();doAttack();e.preventDefault();});
 
-// ======================= TARMOQ =======================
+// Tarmoq
 function setNet(text,kind){
  const n=$('net');
  if(!text){n.style.display='none';return;}
@@ -1479,26 +1742,45 @@ function maybeSend(now){
  lastSendT=now;ls={x:p.x,y:p.y,z:p.z,r:me.rot};
 }
 
-// ======================= HARAKAT VA KAMERA =======================
+// Harakat
 function updateMe(dt){
+ if(me.attackCd>0)me.attackCd-=dt;
  if(insideHome){
   let ix=(keys.KeyD?1:0)-(keys.KeyA?1:0),iy=(keys.KeyW?1:0)-(keys.KeyS?1:0);
-  const l=Math.hypot(ix,iy)||1;me.pos.x=clamp(me.pos.x+ix/l*4*dt,-8,8);me.pos.z=clamp(me.pos.z-iy/l*4*dt,-7,7);me.pos.y=-35+(elevatorFloor-1)*3.1;
-  camera.position.set(me.pos.x+8,me.pos.y+7,me.pos.z+10);camera.lookAt(me.pos.x,me.pos.y+1.2,me.pos.z);me.speed=0;return;
+  const l=Math.hypot(ix,iy)||1;
+  me.pos.x=clamp(me.pos.x+ix/l*4.5*dt,-9,9);
+  me.pos.z=clamp(me.pos.z-iy/l*4.5*dt,-8,8);
+  me.pos.y=-40+(elevatorFloor-1)*3.2;
+  camera.position.set(me.pos.x+9,me.pos.y+7.5,me.pos.z+11);
+  camera.lookAt(me.pos.x,me.pos.y+1.2,me.pos.z);
+  me.speed=0;
+  if(homeGroup&&homeGroup.userData.tv){
+   homeGroup.userData.tvT=(homeGroup.userData.tvT||0)+dt;
+   const c=0x102030+((Math.sin(homeGroup.userData.tvT*2)*0x20)|0)*0x10000+((Math.cos(homeGroup.userData.tvT*1.7)*0x30)|0)*0x100;
+   homeGroup.userData.tv.material.color.setHex(c&0xffffff);
+  }
+  showHint('E — lift  |  F — chiqish  |  H — uxash');
+  return;
  }
  if(activeCar){
-  const v=activeCar.userData;const throttle=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
+  const v=activeCar.userData;
+  const throttle=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
   const steer=(keys.KeyA||keys.ArrowLeft?1:0)-(keys.KeyD||keys.ArrowRight?1:0);
-  v.speed+=throttle*10*dt;v.speed*=Math.pow(keys.Space?0.80:0.985,dt*60);v.speed=clamp(v.speed,-9,27);
-  v.steer=THREE.MathUtils.lerp(v.steer,steer,1-Math.exp(-dt*7));
-  activeCar.rotation.y+=v.steer*(0.55+Math.min(Math.abs(v.speed)/22,0.65))*dt*Math.sign(v.speed||1);
-  const nx=activeCar.position.x+Math.sin(activeCar.rotation.y)*v.speed*dt,nz=activeCar.position.z+Math.cos(activeCar.rotation.y)*v.speed*dt;
-  if(Math.abs(nx)<W.limit-2&&Math.abs(nz)<W.limit-2){activeCar.position.x=nx;activeCar.position.z=nz;}
-  v.wheels.forEach(w=>{w.rotation.x+=v.speed*dt/0.39;});v.steering.rotation.z=-v.steer*0.55;
+  const maxSp=v.sport?32:24;
+  v.speed+=throttle*(v.sport?14:10)*dt;
+  v.speed*=Math.pow(keys.Space?0.78:0.986,dt*60);
+  v.speed=clamp(v.speed,-10,maxSp);
+  v.steer=THREE.MathUtils.lerp(v.steer,steer,1-Math.exp(-dt*8));
+  activeCar.rotation.y+=v.steer*(0.6+Math.min(Math.abs(v.speed)/20,0.7))*dt*Math.sign(v.speed||1);
+  const nx=activeCar.position.x+Math.sin(activeCar.rotation.y)*v.speed*dt;
+  const nz=activeCar.position.z+Math.cos(activeCar.rotation.y)*v.speed*dt;
+  if(Math.abs(nx)<W.limit-3&&Math.abs(nz)<W.limit-3){activeCar.position.x=nx;activeCar.position.z=nz;}
+  v.wheels.forEach(w=>{w.rotation.x+=v.speed*dt/0.37;});
+  v.steering.rotation.z=-v.steer*0.6;
   me.pos.set(activeCar.position.x,0,activeCar.position.z);me.rot=activeCar.rotation.y;me.speed=Math.abs(v.speed);
-  showHint('🚘 HAYDOVCHI  |  W/S — gaz va tormoz  |  A/D — rul  |  SPACE — tormoz  |  E — tushish');return;
+  showHint('🚘 HAYDOVCHI  |  W/S gaz-tormoz  |  A/D rul  |  SPACE tormoz  |  E tushish');
+  return;
  }
- if(insideHome)return;
  let ix=0,iy=0;
  if(!typing()){
   if(keys.KeyW||keys.ArrowUp)iy+=1;
@@ -1511,7 +1793,7 @@ function updateMe(dt){
  if(len>1){ix/=len;iy/=len;len=1;}
  if(len<0.1)len=0;
  const run=keys.ShiftLeft||keys.ShiftRight||runToggle||(joy.id!==-1&&joy.mag>0.92);
- const spd=(run?13:7)*len;
+ const spd=(run?13.5:7.2)*len;
  const px=me.pos.x,pz=me.pos.z;
  let dx=0,dz=0;
  if(len>0){
@@ -1525,15 +1807,17 @@ function updateMe(dt){
  me.pos.x=clamp(me.pos.x,-lm,lm);me.pos.z=clamp(me.pos.z,-lm,lm);
  me.speed=dt>0?Math.hypot(me.pos.x-px,me.pos.z-pz)/dt:0;
 
- if((keys.Space||jumpHeld)&&me.grounded&&!typing()){me.vy=8.2;me.grounded=false;}
+ if((keys.Space||jumpHeld)&&me.grounded&&!typing()){me.vy=8.4;me.grounded=false;}
  me.vy-=22*dt;me.pos.y+=me.vy*dt;
  if(me.pos.y<=0){me.pos.y=0;me.vy=0;me.grounded=true;}
 
  let hintText='';
  let carNear=999;vehicles.forEach(v=>{carNear=Math.min(carNear,Math.hypot(v.position.x-me.pos.x,v.position.z-me.pos.z));});
  const homeNear=nearestBuilding();
- if(carNear<4.5)hintText='E — avtomobilga o‘tirish';
- else if(homeNear&&homeNear.dist<7)hintText='E — binoga kirish';
+ if(carNear<4.8)hintText='E — avtomobilga o‘tirish';
+ else if(homeNear&&homeNear.dist<8)hintText='E — binoga kirish (50 qavat)';
+ else if(mineMarker&&Math.hypot(me.pos.x-mineMarker.x,me.pos.z-mineMarker.z)<mineMarker.r+3)hintText='E — KON QAZISH (zombilar xavfli!)  |  F — hujum';
+ else if(me.weapon)hintText='F — hujum ('+me.weapon+')';
  showHint(hintText);
  const av=me.avatar;
  if(!activeCar&&!insideHome){av.visible=true;av.position.copy(me.pos);av.rotation.y=me.rot;animAvatar(av,me.speed,me.grounded,dt);}
@@ -1554,15 +1838,15 @@ function updateOthers(dt){
 }
 const tmpDir={x:0,y:0,z:0};
 function updateCamera(dt,t){
- if(insideHome){camera.position.set(me.pos.x+8,me.pos.y+7,me.pos.z+10);camera.lookAt(me.pos.x,me.pos.y+1.2,me.pos.z);return;}
+ if(insideHome){camera.position.set(me.pos.x+9,me.pos.y+7.5,me.pos.z+11);camera.lookAt(me.pos.x,me.pos.y+1.2,me.pos.z);return;}
  if(!me.avatar){
   const a=t*0.00007;
-  camera.position.set(Math.cos(a)*46,22,Math.sin(a)*46);
-  camera.lookAt(0,7,0);
+  camera.position.set(Math.cos(a)*50,24,Math.sin(a)*50);
+  camera.lookAt(0,8,0);
   return;
  }
- const hx=me.pos.x,hy=me.pos.y+(activeCar?1.45:1.9),hz=me.pos.z;
- if(activeCar){camDistWant=7.5;camPitch=0.24;}
+ const hx=me.pos.x,hy=me.pos.y+(activeCar?1.5:1.9),hz=me.pos.z;
+ if(activeCar){camDistWant=8;camPitch=0.22;}
  const cp=Math.cos(camPitch);
  tmpDir.x=Math.sin(camYaw)*cp;tmpDir.y=Math.sin(camPitch);tmpDir.z=Math.cos(camYaw)*cp;
  let safe=camDistWant;
@@ -1573,21 +1857,120 @@ function updateCamera(dt,t){
  camera.position.set(hx+tmpDir.x*camDist,Math.max(hy+tmpDir.y*camDist,0.5),hz+tmpDir.z*camDist);
  camera.lookAt(hx,hy,hz);
  me.avatar.visible=camDist>1.7;
- const wantFov=me.speed>9?75:68;
+ const wantFov=me.speed>10?76:68;
  camFov=lerp(camFov,wantFov,1-Math.exp(-dt*4));
  if(Math.abs(camera.fov-camFov)>0.05){camera.fov=camFov;camera.updateProjectionMatrix();}
 }
+
+function updateDayNight(dt){
+ dayTime=(dayTime+daySpeed*dt*60)%1;
+ const ang=dayTime*TAU;
+ const elev=Math.sin(ang)*0.75+0.15;
+ SUN_DIR.set(Math.cos(ang),Math.max(0.05,elev),Math.sin(ang)*0.6).normalize();
+ const dayFactor=clamp(elev*1.4,0.05,1);
+ sun.intensity=0.3+dayFactor*0.9;
+ hemi.intensity=0.25+dayFactor*0.55;
+ const skyTop=new THREE.Color().setHSL(0.58,0.55,0.15+dayFactor*0.35);
+ const skyHor=new THREE.Color().setHSL(0.08+dayFactor*0.05,0.4,0.2+dayFactor*0.55);
+ if(sky&&sky.material.uniforms){
+  sky.material.uniforms.cTop.value.copy(skyTop);
+  sky.material.uniforms.cHor.value.copy(skyHor);
+  sky.material.uniforms.sunDir.value.copy(SUN_DIR);
+ }
+ scene.fog.color.lerpColors(new THREE.Color(0x1a2030),new THREE.Color(0xc9dcec),dayFactor);
+ scene.background.copy(scene.fog.color);
+}
+
 function updateEnv(dt){
  const fx=me.avatar?me.pos.x:0,fz=me.avatar?me.pos.z:0;
  const sx=Math.round(fx/3)*3,sz=Math.round(fz/3)*3;
  sun.target.position.set(sx,0,sz);sun.target.updateMatrixWorld();
- sun.position.set(sx+SUN_DIR.x*140,SUN_DIR.y*140,sz+SUN_DIR.z*140);
+ sun.position.set(sx+SUN_DIR.x*160,SUN_DIR.y*160,sz+SUN_DIR.z*160);
  sky.position.copy(camera.position);
  if(cloudGroup){cloudGroup.position.set(camera.position.x,0,camera.position.z);cloudGroup.rotation.y+=dt*0.004;}
+ updateDayNight(dt);
 }
 
-// ======================= O'YIN TSIKLI =======================
-let lastT=0,frameErr=false;
+// Life UI
+let lifeToken=store('ulrp_token')||'';
+let lifeData=null;
+function updateHpBar(){
+ const bar=$('hpbar'),fill=$('hpfill');
+ if(me.hp<100){bar.style.display='block';fill.style.width=me.hp+'%';fill.style.background=me.hp<30?'#ff4444':(me.hp<60?'#ffaa33':'linear-gradient(90deg,#32d99a,#7dffb0)');}
+ else bar.style.display='none';
+}
+function drawLife(){
+ if(!lifeData){$('lifeStats').textContent='Hisob yo‘q';return;}
+ const h=lifeData.hunger,c=lifeData.cash,w=lifeData.wanted,j=lifeData.jailed_until;
+ me.weapon=lifeData.weapon||null;
+ let html='<b>'+c+'</b> so‘m<br>';
+ html+='Ochlik: <span class="'+(h<30?'bad':'')+'">'+h+'%</span><br>';
+ html+='HP: '+me.hp+'%<br>';
+ if(me.weapon)html+='Qurol: '+me.weapon+'<br>';
+ if(w>0)html+='<span class="bad">Qidiruv: '+w+'/5</span><br>';
+ if(j>0)html+='<span class="bad">Qamoq: '+j+'s</span><br>';
+ $('lifeStats').innerHTML=html;
+ updateHpBar();
+}
+async function lifeRequest(path,body){
+ const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','Authorization':'Bearer '+lifeToken},body:body?JSON.stringify(body):undefined});
+ const d=await r.json();if(!r.ok)throw new Error(d.detail||'So‘rov bajarilmadi');return d;
+}
+async function refreshLife(){try{lifeData=await lifeRequest('/api/state');drawLife();}catch(e){$('lifeStats').textContent=e.message;}}
+window.lifeAction=async function(action,item){
+ try{
+  const d=await lifeRequest('/api/action',{action:action,item:item||''});
+  lifeData=d;drawLife();
+  if(d.message)toast(d.message);
+  if(action==='buy'&&item&&WEAPON_DMG[item])me.weapon=item;
+  if(action==='mine'){
+   // Zombilar qayta paydo
+   zombies.forEach(z=>{if(z.dead&&Math.random()<0.3){z.dead=false;z.hp=50+Math.random()*40;z.group.visible=true;}});
+  }
+ }catch(e){toast(e.message||'Xato');}
+};
+
+function openShop(){
+ if(!lifeData){toast('Avval kiring');return;}
+ const list=$('shopList');list.innerHTML='';
+ const shop=lifeData.shop||{};
+ const keys=Object.keys(shop);
+ keys.forEach(function(k){
+  const p=shop[k];
+  const row=document.createElement('div');row.className='itemrow';
+  const can=lifeData.cash>=p.price;
+  row.innerHTML='<span>'+p.title+' — <b>'+p.price+'</b> so‘m'+(p.hunger?' (+'+p.hunger+' ochlik)':'')+(p.dmg?' (zarar '+p.dmg+')':'')+'</span>';
+  const btn=document.createElement('button');btn.textContent='Sotib ol';btn.disabled=!can;
+  btn.onclick=function(){lifeAction('buy',k);openShop();};
+  row.appendChild(btn);list.appendChild(row);
+ });
+ $('shopModal').classList.add('show');
+}
+function openInv(){
+ if(!lifeData){toast('Avval kiring');return;}
+ const list=$('invList');list.innerHTML='';
+ const inv=lifeData.inventory||{};
+ const keys=Object.keys(inv).filter(k=>inv[k]>0);
+ if(!keys.length)list.innerHTML='<div style="color:#889">Bo‘sh</div>';
+ keys.forEach(function(k){
+  const row=document.createElement('div');row.className='itemrow';
+  row.innerHTML='<span>'+(lifeData.shop[k]?lifeData.shop[k].title:k)+' ×'+inv[k]+'</span>';
+  const btn=document.createElement('button');
+  if(lifeData.shop[k]&&lifeData.shop[k].kind==='food'){btn.textContent='Ye';btn.onclick=function(){lifeAction('eat',k);openInv();};}
+  else if(lifeData.shop[k]&&(lifeData.shop[k].kind==='weapon'||lifeData.shop[k].kind==='illegal_weapon')){btn.textContent='Jihozla';btn.onclick=function(){me.weapon=k;lifeData.weapon=k;drawLife();toast(k+' jihozlandi');};}
+  else if(lifeData.shop[k]&&lifeData.shop[k].heal){btn.textContent='Ishlat';btn.onclick=function(){lifeAction('use',k);openInv();};}
+  else{btn.textContent='—';btn.disabled=true;}
+  row.appendChild(btn);list.appendChild(row);
+ });
+ $('invModal').classList.add('show');
+}
+$('shopbtn').onclick=openShop;
+$('invbtn').onclick=openInv;
+$('shopClose').onclick=function(){$('shopModal').classList.remove('show');};
+$('invClose').onclick=function(){$('invModal').classList.remove('show');};
+
+// O'yin tsikli
+let lastT=0,frameErr=false,hungerTick=0;
 function frame(now){
  requestAnimationFrame(frame);
  try{
@@ -1595,9 +1978,17 @@ function frame(now){
   if(me.avatar)updateMe(dt);
   updateOthers(dt);
   updateCityPopulation(dt,now);
+  updateZombies(dt,now);
   updateCamera(dt,now);
   updateEnv(dt);
   if(me.avatar)maybeSend(now);
+  // Ochlik kamayishi
+  hungerTick+=dt;
+  if(hungerTick>45&&lifeData&&!insideHome){
+   hungerTick=0;
+   if(lifeData.hunger>0){lifeData.hunger=Math.max(0,lifeData.hunger-2);drawLife();
+    if(lifeData.hunger<15)toast('Ochlik kuchli! Do‘kondan ovqat oling');}
+  }
   renderer.render(scene,camera);
   monitor(now);
  }catch(e){
@@ -1608,17 +1999,11 @@ function frame(now){
 window.addEventListener('resize',fitRenderer);
 window.addEventListener('orientationchange',function(){setTimeout(function(){fitRenderer();joyRest();},200);});
 
-// ======================= KIRISH OYNASI =======================
-let lifeToken=store('ulrp_token')||'';
-let lifeData=null;
-async function lifeRequest(path,body){
- const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','Authorization':'Bearer '+lifeToken},body:body?JSON.stringify(body):undefined});
- const d=await r.json();if(!r.ok)throw new Error(d.detail||'So‘rov bajarilmadi');return d;
+async function createLifeSession(name){
+ const r=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+ const d=await r.json();if(!r.ok)throw new Error(d.detail||'Hisob ochilmadi');
+ lifeToken=d.token;store('ulrp_token',lifeToken);lifeData=d.state;drawLife();
 }
-function drawLife(){}
-async function refreshLife(){try{lifeData=await lifeRequest('/api/state');drawLife();}catch(e){$('lifeStats').textContent=e.message;}}
-window.lifeAction=async function(action,item){return;};
-async function createLifeSession(name){const r=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Hisob ochilmadi');lifeToken=d.token;store('ulrp_token',lifeToken);lifeData=d.state;drawLife();}
 
 async function startPlaying(){
  const name=$('nickname').value.trim();
@@ -1629,19 +2014,19 @@ async function startPlaying(){
  $('login').style.display='none';
  try{document.activeElement.blur();}catch(e){}
  wantConnect=true;retry=0;connect();
+ setInterval(refreshLife,30000);
 }
 $('start').addEventListener('click',startPlaying);
 $('nickname').addEventListener('keydown',function(e){if(e.key==='Enter')startPlaying();});
 
-// ======================= BOSHLASH =======================
 async function boot(){
- const watchdog=setTimeout(function(){bootFail('Yuklash juda uzoq davom etmoqda. Internetni tekshiring yoki qayta urinib ko‘ring.');},35000);
+ const watchdog=setTimeout(function(){bootFail('Yuklash juda uzoq. Internetni tekshiring.');},40000);
  try{
   setBoot(5,'Boshlanmoqda...');
   await loadThree();
-  setBoot(40,'Grafika tayyorlanmoqda...');await pause();
+  setBoot(35,'Grafika tayyorlanmoqda...');await pause();
   initEngine();
-  setBoot(60,'Shahar qurilmoqda...');await pause();
+  setBoot(55,'Shahar qurilmoqda...');await pause();
   buildWorld();
   buildCityPopulation();
   applyQuality(curLevel);
@@ -1698,82 +2083,156 @@ async def api_session(payload: dict):
     token = secrets.token_urlsafe(32)
     con = db_conn()
     try:
-        old = con.execute("SELECT * FROM accounts WHERE name=? COLLATE NOCASE ORDER BY created_at LIMIT 1", (name,)).fetchone()
+        old = con.execute(
+            "SELECT * FROM accounts WHERE name=? COLLATE NOCASE ORDER BY created_at LIMIT 1",
+            (name,),
+        ).fetchone()
         if old:
-            # Existing account token rotates on successful nickname login; game prototype has no password login yet.
             con.execute("UPDATE accounts SET token=? WHERE token=?", (token, old["token"]))
         else:
-            con.execute("INSERT INTO accounts(token,name,cash,hunger,inventory,wanted,jailed_until,mine_at,created_at) VALUES(?,?,0,100,'{}',0,0,0,?)", (token,name,int(time.time())))
+            con.execute(
+                "INSERT INTO accounts(token,name,cash,hunger,inventory,wanted,jailed_until,mine_at,hp,weapon,created_at) VALUES(?,?,150,100,'{}',0,0,0,100,NULL,?)",
+                (token, name, int(time.time())),
+            )
         con.commit()
-        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
-        return {"token":token,"state":account_state(row)}
-    finally: con.close()
+        row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
+        return {"token": token, "state": account_state(row)}
+    finally:
+        con.close()
+
 
 def auth_account(request):
-    token=request.headers.get("Authorization","").replace("Bearer ","",1).strip()
-    if not token: raise HTTPException(status_code=401,detail="Hisob sessiyasi topilmadi")
-    con=db_conn()
-    row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+    token = request.headers.get("Authorization", "").replace("Bearer ", "", 1).strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Hisob sessiyasi topilmadi")
+    con = db_conn()
+    row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
     con.close()
-    if not row: raise HTTPException(status_code=401,detail="Sessiya yaroqsiz")
-    return token,row
+    if not row:
+        raise HTTPException(status_code=401, detail="Sessiya yaroqsiz")
+    return token, row
+
 
 @app.get("/api/state")
 async def api_state(request: Request):
-    token,row=auth_account(request)
-    con=db_conn()
+    token, row = auth_account(request)
+    con = db_conn()
     try:
-        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
+        row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
         return account_state(row)
-    finally: con.close()
+    finally:
+        con.close()
+
 
 @app.post("/api/action")
 async def api_action(request: Request, payload: dict):
-    token,row=auth_account(request)
-    action=str(payload.get("action", ""))[:24]
-    item=str(payload.get("item", ""))[:32]
-    con=db_conn()
+    token, row = auth_account(request)
+    action = str(payload.get("action", ""))[:24]
+    item = str(payload.get("item", ""))[:32]
+    con = db_conn()
     try:
         con.execute("BEGIN IMMEDIATE")
-        row=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
-        cash=int(row["cash"]); hunger=int(row["hunger"]); wanted=int(row["wanted"]); jailed=int(row["jailed_until"])
-        inv=json.loads(row["inventory"] or "{}")
-        now=int(time.time()); message=""
-        if jailed>now and action not in ("wanted",):
-            raise HTTPException(status_code=403,detail="Siz qamoqdasiz. Muddat tugashini kuting.")
-        if action=="mine":
-            last=float(row["mine_at"])
-            if time.time()-last<20: raise HTTPException(status_code=429,detail="Kon qayta ishlashi uchun 20 soniya kuting.")
-            reward=random.randint(35,90);cash+=reward;message=f"Kon qazib {reward} so‘m topdingiz."
-            con.execute("UPDATE accounts SET mine_at=? WHERE token=?",(time.time(),token))
-        elif action=="buy":
-            product=SHOP.get(item)
-            if not product: raise HTTPException(status_code=404,detail="Mahsulot topilmadi")
-            if cash<product["price"]: raise HTTPException(status_code=400,detail="Pul yetarli emas. Avval kon qazib pul toping.")
-            cash-=product["price"]
-            inv[item]=int(inv.get(item,0))+1
-            if product["kind"]=="illegal": wanted=min(5,wanted+1)
-            message=product["title"]+" sotib olindi."
-        elif action=="eat":
-            food=next((k for k in ("lavash","osh","non","suv") if inv.get(k,0)>0),None)
-            if not food: raise HTTPException(status_code=400,detail="Ovqat yo‘q. Do‘kondan sotib oling.")
-            inv[food]-=1;hunger=min(100,hunger+SHOP[food]["hunger"]);message="Ovqatlandingiz."
-        elif action=="sleep":
-            hunger=max(0,hunger-5);message="Dam oldingiz. Ochlik biroz oshdi."
-        elif action=="wanted":
-            if wanted>0:
-                jailed=now+max(60,wanted*300);wanted=0;message="Politsiya sizni ushladi. Qamoq muddati boshlandi."
-            else: message="Siz qidiruvda emassiz."
-        elif action=="crime":
-            wanted=min(5,wanted+1);message="Noqonuniy harakat qayd etildi. Politsiya qidiruvi oshdi."
-        else: raise HTTPException(status_code=400,detail="Noma’lum amal")
-        con.execute("UPDATE accounts SET cash=?,hunger=?,inventory=?,wanted=?,jailed_until=? WHERE token=?",(cash,hunger,json.dumps(inv),wanted,jailed,token))
+        row = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
+        cash = int(row["cash"])
+        hunger = int(row["hunger"])
+        wanted = int(row["wanted"])
+        jailed = int(row["jailed_until"])
+        hp = int(row["hp"]) if "hp" in row.keys() else 100
+        weapon = row["weapon"] if "weapon" in row.keys() else None
+        inv = json.loads(row["inventory"] or "{}")
+        now = int(time.time())
+        message = ""
+
+        if jailed > now and action not in ("wanted",):
+            raise HTTPException(status_code=403, detail="Siz qamoqdasiz. Muddat tugashini kuting.")
+
+        if action == "mine":
+            last = float(row["mine_at"])
+            if time.time() - last < 18:
+                raise HTTPException(status_code=429, detail="Kon qayta ishlashi uchun 18 soniya kuting.")
+            reward = random.randint(40, 120)
+            cash += reward
+            message = f"Kon qazib {reward} so‘m topdingiz. Zombilardan ehtiyot bo‘ling!"
+            con.execute("UPDATE accounts SET mine_at=? WHERE token=?", (time.time(), token))
+
+        elif action == "buy":
+            product = SHOP.get(item)
+            if not product:
+                raise HTTPException(status_code=404, detail="Mahsulot topilmadi")
+            if cash < product["price"]:
+                raise HTTPException(status_code=400, detail="Pul yetarli emas. Kon qazib pul toping.")
+            cash -= product["price"]
+            inv[item] = int(inv.get(item, 0)) + 1
+            if product["kind"] in ("illegal", "illegal_weapon"):
+                wanted = min(5, wanted + 1)
+            if product["kind"] in ("weapon", "illegal_weapon"):
+                weapon = item
+            message = product["title"] + " sotib olindi."
+
+        elif action == "eat":
+            food = item if item in inv and inv.get(item, 0) > 0 else None
+            if not food:
+                food = next((k for k in ("pitsa", "osh", "lavash", "shashlik", "manti", "lagmon", "somsa", "non", "suv", "choy", "kola", "pirojnoe") if inv.get(k, 0) > 0), None)
+            if not food or inv.get(food, 0) <= 0:
+                raise HTTPException(status_code=400, detail="Ovqat yo‘q. Do‘kondan sotib oling.")
+            inv[food] -= 1
+            if inv[food] <= 0:
+                inv.pop(food, None)
+            add_h = SHOP.get(food, {}).get("hunger", 15)
+            hunger = min(100, hunger + add_h)
+            message = "Ovqatlandingiz (+" + str(add_h) + " ochlik)."
+
+        elif action == "use":
+            product = SHOP.get(item)
+            if not product or inv.get(item, 0) <= 0:
+                raise HTTPException(status_code=400, detail="Mahsulot yo‘q")
+            inv[item] -= 1
+            if inv[item] <= 0:
+                inv.pop(item, None)
+            if product.get("heal"):
+                hp = min(100, hp + product["heal"])
+                message = "Davolandingiz. +" + str(product["heal"]) + " HP"
+            else:
+                message = "Ishlatildi."
+
+        elif action == "sleep":
+            hunger = max(0, hunger - 8)
+            hp = min(100, hp + 15)
+            message = "Dam oldingiz. HP tiklandi, ochlik biroz oshdi."
+
+        elif action == "wanted":
+            if wanted > 0:
+                jailed = now + max(120, wanted * 400)
+                wanted = 0
+                message = "Politsiya sizni ushladi. Qamoq muddati boshlandi."
+            else:
+                message = "Siz qidiruvda emassiz."
+
+        elif action == "crime":
+            wanted = min(5, wanted + 1)
+            message = "Noqonuniy harakat qayd etildi. Politsiya qidiruvi oshdi."
+
+        else:
+            raise HTTPException(status_code=400, detail="Noma’lum amal")
+
+        con.execute(
+            "UPDATE accounts SET cash=?,hunger=?,inventory=?,wanted=?,jailed_until=?,hp=?,weapon=? WHERE token=?",
+            (cash, hunger, json.dumps(inv), wanted, jailed, hp, weapon, token),
+        )
         con.commit()
-        fresh=con.execute("SELECT * FROM accounts WHERE token=?",(token,)).fetchone()
-        result=account_state(fresh);result["message"]=message;return result
+        fresh = con.execute("SELECT * FROM accounts WHERE token=?", (token,)).fetchone()
+        result = account_state(fresh)
+        result["message"] = message
+        return result
+    except HTTPException:
+        con.rollback()
+        raise
     except Exception:
-        con.rollback();raise
-    finally: con.close()
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -1787,7 +2246,6 @@ async def favicon():
 @app.websocket("/ws")
 async def multiplayer(websocket: WebSocket):
     await websocket.accept()
-
     name = clean_name(websocket.query_params.get("name", "Player"))
     player = game.add(websocket, name)
 
@@ -1821,7 +2279,6 @@ async def multiplayer(websocket: WebSocket):
             raw = await websocket.receive_text()
             now = time.monotonic()
 
-            # tezlik cheklovi (flood himoyasi)
             if now - player.msg_t >= 1.0:
                 player.msg_t = now
                 player.msg_n = 0
@@ -1860,13 +2317,8 @@ async def multiplayer(websocket: WebSocket):
         await game.drop(player.id)
 
 
-# =========================
-# LOKAL ISHGA TUSHIRISH
-# =========================
-
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
