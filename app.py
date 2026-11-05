@@ -1239,10 +1239,8 @@ function makeSkyMesh(radius){
 }
 function buildEnv(){envTried=true;try{const pm=new THREE.PMREMGenerator(renderer);const s=new THREE.Scene();s.add(makeSkyMesh(100));const rt=pm.fromScene(s,0,0.1,200);envTex=rt.texture;pm.dispose();}catch(e){console.warn('Muhit xaritasi yaratilmadi:',e);envTex=null;}}
 
-const PAL={dayTop:new THREE.Color(0x2f6fc4),dayMid:new THREE.Color(0x7fb2e6),dayHor:new THREE.Color(0xc9dcec),
- duskTop:new THREE.Color(0x3b4f8f),duskMid:new THREE.Color(0xb9807a),duskHor:new THREE.Color(0xf2a566),
- nTop:new THREE.Color(0x03060f),nMid:new THREE.Color(0x0a1330),nHor:new THREE.Color(0x16223d)};
-const tmpC=new THREE.Color(),tmpC2=new THREE.Color();
+let PAL,tmpC,tmpC2;
+function initPal(){const C=function(h){return new THREE.Color(h);};PAL={dayTop:C(0x2f6fc4),dayMid:C(0x7fb2e6),dayHor:C(0xc9dcec),duskTop:C(0x3b4f8f),duskMid:C(0xb9807a),duskHor:C(0xf2a566),nTop:C(0x03060f),nMid:C(0x0a1330),nHor:C(0x16223d)};tmpC=C(0);tmpC2=C(0);}
 function mix3(out,a,b,c,wa,wb,wc){out.setRGB(a.r*wa+b.r*wb+c.r*wc,a.g*wa+b.g*wb+c.g*wc,a.b*wa+b.b*wb+c.b*wc);}
 function updateSky(){
  const a=(hourNow-6)/24*TAU,se=Math.sin(a);
@@ -1278,7 +1276,7 @@ function initEngine(){
  ANISO=Math.min(renderer.capabilities.getMaxAnisotropy()||1,start>=3?8:(start>=2?4:2));TEXS=start>=2?512:256;
  canvas.addEventListener('webglcontextlost',function(e){e.preventDefault();toast('Grafika konteksti yo‘qoldi. Sahifa qayta yuklanadi...');});
  canvas.addEventListener('webglcontextrestored',function(){location.reload();});
- SUN_DIR=new THREE.Vector3(0.55,0.62,0.45).normalize();dummy=new THREE.Object3D();
+ initPal();SUN_DIR=new THREE.Vector3(0.55,0.62,0.45).normalize();dummy=new THREE.Object3D();
  me={pos:new THREE.Vector3(),vy:0,grounded:true,rot:0,speed:0,avatar:null,veh:0,hp:100};
  scene=new THREE.Scene();scene.background=new THREE.Color(0xc9dcec);scene.fog=new THREE.Fog(0xc9dcec,60,300);
  camera=new THREE.PerspectiveCamera(68,innerWidth/innerHeight,0.3,950);camera.position.set(0,40,120);
